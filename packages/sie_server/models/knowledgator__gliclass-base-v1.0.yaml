@@ -1,0 +1,23 @@
+sie_id: knowledgator/gliclass-base-v1.0
+hf_id: knowledgator/gliclass-base-v1.0
+hf_revision: aa3ac24a77860a033c9e9a3aa90d5872722cb7bf
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode: null
+  score: null
+  extract: {}
+max_sequence_length: 512
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.gliclass:GLiClassAdapter
+    adapter_options:
+      loadtime:
+        classification_type: single-label
+      runtime:
+        threshold: 0.0

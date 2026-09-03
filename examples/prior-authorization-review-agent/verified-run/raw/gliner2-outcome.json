@@ -1,0 +1,76 @@
+{
+  "entities": [
+    {
+      "text": "doctor",
+      "label": "organization",
+      "score": 0.5498046875,
+      "start": 4,
+      "end": 10,
+      "bbox": null
+    },
+    {
+      "text": "face-to-face encounter",
+      "label": "missing documentation",
+      "score": 0.92626953125,
+      "start": 31,
+      "end": 53,
+      "bbox": null
+    },
+    {
+      "text": "6 months",
+      "label": "time period",
+      "score": 0.99267578125,
+      "start": 61,
+      "end": 69,
+      "bbox": null
+    },
+    {
+      "text": "review contractor",
+      "label": "organization",
+      "score": 0.85546875,
+      "start": 97,
+      "end": 114,
+      "bbox": null
+    },
+    {
+      "text": "insufficient documentation error",
+      "label": "claim result",
+      "score": 0.92919921875,
+      "start": 141,
+      "end": 173,
+      "bbox": null
+    },
+    {
+      "text": "MAC",
+      "label": "organization",
+      "score": 0.97216796875,
+      "start": 183,
+      "end": 186,
+      "bbox": null
+    },
+    {
+      "text": "recoups payment",
+      "label": "payment action",
+      "score": 0.9326171875,
+      "start": 187,
+      "end": 202,
+      "bbox": null
+    }
+  ],
+  "relations": [],
+  "classifications": [],
+  "objects": [],
+  "id": "cms-l1851-outcome",
+  "model": "fastino/gliner2-large-v1",
+  "request": {
+    "id": "019fe8ae-d19f-7160-9d01-b0e62fa8dd18",
+    "credits_debited": 1,
+    "rate_book_version": "2026-07-26-production-bootstrap-v2",
+    "usage": {
+      "input_tokens": 43,
+      "credits_charged": 1,
+      "rate_book_version": "2026-07-26-production-bootstrap-v2"
+    },
+    "execution_identity_sha256": "a61058c96cb7d88459f63949845a8b35aa0b258042898d6159adf80eff846963"
+  }
+}

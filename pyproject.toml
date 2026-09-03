@@ -1,0 +1,287 @@
+[project]
+name = "sie"
+version = "0.0.0"
+description = "Superlinked Inference Engine"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "docker>=7.1.0",
+    "huggingface-hub>=0.26,<2",
+    "pre-commit~=4.0",
+    "pytest>=9.0.3",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-sugar",
+    "pyyaml>=6,<7",
+    "python-docx>=1.1",
+    "reportlab>=4.0",
+    "ruff==0.15.12",
+    "ty==0.0.32",
+    # Type-check the server's gpu-metrics extra without relying on a transitive
+    # provider dependency.
+    "nvidia-ml-py>=13.5,<14",
+    # sie-crewai pulls uv in as a runtime dependency. Pin it to the same
+    # version mise manages so an all-package sync cannot shadow the task
+    # runner's uv executable with a different resolver.
+    "uv==0.5.31",
+]
+
+[tool.uv]
+# The repository root is a development environment, not a distribution.
+package = false
+index-strategy = "unsafe-best-match"
+# docling -> rapidocr requests the GUI OpenCV wheel. The server declares the
+# headless wheel, which exposes the same Python API without X11/GL libraries.
+override-dependencies = [
+    "opencv-python; sys_platform == 'never'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
+]
+sie-audio-prep = { workspace = true }
+sie-config = { workspace = true }
+sie-mcp = { workspace = true }
+sie-sdk = { workspace = true }
+sie-server = { workspace = true }
+
+[tool.uv.workspace]
+# This explicit allowlist defines the supported Python workspace boundary.
+# Never infer membership from packages/*.
+members = [
+    "packages/sie_audio_prep",
+    "packages/sie_config",
+    "packages/sie_mcp",
+    "packages/sie_sdk",
+    "packages/sie_server",
+    "integrations/sie_chroma",
+    "integrations/sie_crewai",
+    "integrations/sie_dspy",
+    "integrations/sie_haystack",
+    "integrations/sie_lancedb",
+    "integrations/sie_langchain",
+    "integrations/sie_llamaindex",
+    "integrations/sie_qdrant",
+    "integrations/sie_weaviate",
+]
+
+[tool.pytest.ini_options]
+# Integration projects keep their own pytest configuration and are exercised
+# by `mise run test-integrations`.
+testpaths = [
+    "packages/sie_audio_prep/tests",
+    "packages/sie_config/tests",
+    "packages/sie_mcp/tests",
+    "packages/sie_sdk/tests",
+    "packages/sie_server/tests",
+]
+addopts = "-m 'not integration and not docker and not model' --import-mode=importlib"
+asyncio_mode = "auto"
+markers = [
+    "integration: tests that require a running SIE server (deselected by default)",
+    "docker: tests that build/run Docker images",
+    "gpu: tests that require a GPU worker pool",
+    "gpu_hw: tests that require real GPU hardware",
+    "scaling: tests for autoscaling behavior",
+    "gke: tests that require a real GKE cluster",
+    "eks: tests that require a real EKS cluster",
+    "generation: tests that exercise generation endpoint contracts or a real generation worker",
+    "observability: tests that require optional local observability components",
+    "idle_rerank: opt-in end-to-end idle-eviction behavior",
+    "model: model regression tests that download real weights",
+    "fake_stack: deterministic weightless Fake Engine regression tests",
+]
+
+[tool.ruff]
+line-length = 120
+indent-width = 4
+target-version = "py312"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+skip-magic-trailing-comma = false
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "A001",
+    "A002",
+    "ANN401",
+    "ARG001",
+    "ARG004",
+    "B007",
+    "B023",
+    "B027",
+    "B905",
+    "C901",
+    "COM812",
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D105",
+    "D107",
+    "D205",
+    "D213",
+    "D402",
+    "D417",
+    "E402",
+    "E501",
+    "EM101",
+    "EM102",
+    "FBT001",
+    "FBT002",
+    "FBT003",
+    "FIX002",
+    "N806",
+    "N812",
+    "PD011",
+    "PERF401",
+    "PERF402",
+    "PGH003",
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "PLW0603",
+    "PLW2901",
+    "PT012",
+    "PTH100",
+    "PTH110",
+    "PTH118",
+    "PTH120",
+    "PTH123",
+    "PTH207",
+    "RET504",
+    "RUF002",
+    "RUF003",
+    "S101",
+    "SIM102",
+    "SIM105",
+    "SIM108",
+    "SIM115",
+    "SLF001",
+    "TC001",
+    "TC002",
+    "TC003",
+    "TD002",
+    "TD003",
+    "TRY003",
+    "TRY004",
+    "TRY300",
+    "TRY301",
+    "TRY400",
+    "T201",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**/*" = [
+    "ANN",
+    "ARG",
+    "B007",
+    "B905",
+    "ERA001",
+    "F821",
+    "INP001",
+    "NPY002",
+    "PLC0415",
+    "PLR2004",
+    "RET504",
+    "S101",
+    "SIM108",
+    "SIM117",
+    "SLF001",
+]
+"integrations/**/src/**/*" = [
+    "PLC0415",
+    "PLR0913",
+    "TC002",
+]
+"**/adapters/**/*" = [
+    "ARG002",
+    "ARG003",
+    "ERA001",
+    "F401",
+    "PLC0415",
+    "PLR0913",
+    "PLR2004",
+]
+"packages/sie_server/src/sie_server/core/**/*" = [
+    "ARG002",
+    "PLC0415",
+    "PLR2004",
+]
+"packages/sie_server/src/sie_server/api/**/*" = ["PLC0415"]
+"packages/sie_server/src/sie_server/cli.py" = ["PLC0415"]
+"packages/sie_server/src/sie_server/config/**/*" = ["PLC0415"]
+"packages/sie_server/src/sie_server/observability/**/*" = ["PLC0415"]
+"packages/sie_server/scripts/**/*" = [
+    "ANN",
+    "D301",
+    "D415",
+    "EXE001",
+    "INP001",
+    "PLC0415",
+    "RUF001",
+    "S404",
+    "S603",
+    "T201",
+]
+"packages/sie_config/src/sie_config/**/*" = [
+    "PLC0415",
+    "PLR2004",
+    "T201",
+]
+"packages/sie_sdk/src/sie_sdk/**/*" = [
+    "ARG002",
+    "PLC0415",
+    "PLR2004",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.pylint]
+max-args = 6
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+exclude = [
+    "packages/*/tests/**",
+    "integrations/*/tests/**",
+    "packages/sie_audio_prep/**",
+    "packages/sie_server/scripts/**",
+    "packages/sie_server/src/sie_server/adapters/bert_flash/**",
+    "packages/sie_server/src/sie_server/adapters/nomic_flash/**",
+    "packages/sie_server/src/sie_server/adapters/bert_flash_cross_encoder/**",
+    "packages/sie_server/src/sie_server/adapters/qwen2_flash_cross_encoder/**",
+    "packages/sie_server/src/sie_server/adapters/bge_m3_flash/**",
+    "packages/sie_server/src/sie_server/adapters/xlm_roberta_flash/**",
+    "packages/sie_server/src/sie_server/adapters/colbert_rotary_flash/**",
+    "packages/sie_server/src/sie_server/adapters/colbert_modernbert_flash/**",
+    "packages/sie_server/src/sie_server/adapters/splade_flash/**",
+    "packages/sie_server/src/sie_server/adapters/rope_flash/**",
+    "packages/sie_server/src/sie_server/adapters/qwen2_flash/**",
+    "packages/sie_server/src/sie_server/adapters/modernbert_flash_cross_encoder/**",
+]
+
+[tool.ty.rules]
+missing-argument = "warn"
+possibly-missing-attribute = "warn"
+unused-ignore-comment = "ignore"

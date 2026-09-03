@@ -1,0 +1,468 @@
+{{- /* Validate: at most one static overlay may be active. Zero overlays is the
+     default; the gateway fetches bundles+models from sie-config at startup
+     and has NO baked-in filesystem seed (see
+     packages/sie_gateway/docs/architecture-guide.md section 4). */}}
+{{- $modesEnabled := list }}
+{{- if .Values.gateway.embeddedConfigs.enabled }}{{- $modesEnabled = append $modesEnabled "embeddedConfigs" }}{{- end }}
+{{- if .Values.gateway.configMap.enabled }}{{- $modesEnabled = append $modesEnabled "configMap" }}{{- end }}
+{{- if gt (len $modesEnabled) 1 }}
+  {{- fail (printf "gateway: multiple config delivery modes enabled (%v). Enable only one of: embeddedConfigs, configMap." $modesEnabled) }}
+{{- end }}
+{{- /* Telemetry identity and routing are control-plane-owned. Because
+     gateway.extraEnv is rendered after the canonical block, reject duplicate
+     names instead of relying on Kubernetes's last-entry-wins behavior.
+
+     The SIE_STREAM_* trio is reserved for a second reason beyond
+     chart-ownership: the gateway and the worker sidecars both create the
+     work streams and whoever gets there first wins, so the chart renders one
+     value onto both. An extraEnv override would move only the gateway and
+     silently reintroduce exactly the divergence the render guards below
+     exist to prevent. Fail the render instead. */}}
+{{- $reservedGatewayEnv := concat
+      (include "sie-cluster.otel.reservedEnvNames" . | fromJsonArray)
+      (list
+        "SIE_GATEWAY_CONFIGURED_GPUS"
+        "SIE_GATEWAY_CONFIGURED_PHYSICAL_LANES"
+        "SIE_GATEWAY_GPU_ALIASES"
+        "SIE_GATEWAY_HEALTH_MODE"
+        "SIE_GATEWAY_MACHINE_PROFILES"
+        "SIE_GATEWAY_STATIC_QUEUE_POOLS"
+        "SIE_STREAM_MAX_AGE_S"
+        "SIE_STREAM_REPLICAS"
+        "SIE_STREAM_STORAGE") -}}
+{{- include "sie-cluster.env.assertNoReserved" (dict "path" "gateway.extraEnv" "entries" .Values.gateway.extraEnv "reserved" $reservedGatewayEnv) -}}
+{{- range $annotation := list "checksum/gpu-config" "checksum/otel-resource" -}}
+{{- if hasKey $.Values.gateway.podAnnotations $annotation -}}
+{{- fail (printf "gateway.podAnnotations must not override chart-owned annotation %s" $annotation) -}}
+{{- end -}}
+{{- end -}}
+{{- /* Validate: gateway needs SOME source of bundles/models. Since the image
+     no longer bakes a seed, disabling sie-config without also enabling a
+     static overlay would leave the gateway permanently empty and 404 every
+     model request; an obvious deployment-time bug that's worth catching
+     before the cluster runs. */}}
+{{- if and (not .Values.config.enabled) (eq (len $modesEnabled) 0) }}
+  {{- fail "gateway: config.enabled=false requires one of gateway.embeddedConfigs.enabled or gateway.configMap.enabled; the gateway image no longer bakes bundles/models, so something must provide them. See packages/sie_gateway/docs/architecture-guide.md section 11 caveat 7." }}
+{{- end }}
+{{- /* Validate: `clusterRouting` is queue-only today. The Rust gateway has
+     no direct-mode code path; "direct" belongs to Python-gateway deployments
+     and is now a footgun (operators requesting direct would silently
+     get queue behavior). Queue workers rely on the worker-sidecar as the
+     NATS consumer; Python exposes IPC, health, and readiness for that sidecar
+     (see packages/sie_server/src/sie_server/app/app_factory.py).
+     Queue mode requires NATS+JetStream; large-payload offload additionally
+     requires a shared object-store payload store. */}}
+{{- $routing := default "queue" .Values.clusterRouting }}
+{{- if ne $routing "queue" }}
+  {{- fail (printf "clusterRouting=%q is not supported; the gateway is queue-only. Set clusterRouting: queue or leave unset." $routing) }}
+{{- end }}
+{{- if not .Values.nats.enabled }}
+  {{- fail "clusterRouting=queue requires nats.enabled=true" }}
+{{- end }}
+{{- if not .Values.nats.config.jetstream.enabled }}
+  {{- fail "clusterRouting=queue requires nats.config.jetstream.enabled=true" }}
+{{- end }}
+{{- /* Validate: work-queue durability. `queueRouting.streamStorage` is
+     rendered into SIE_STREAM_STORAGE on both the gateway and the worker
+     sidecars, so the two stream creators always agree — but the broker has
+     to be able to honor it. File-backed streams need the NATS sub-chart's
+     JetStream fileStore (a PVC per pod), and replicated streams need a NATS
+     cluster with at least that many members. Catching the mismatch here beats
+     discovering it as a stream-create failure that manifests as a 503 on the
+     inference path. See the chart README's "Work-queue durability" section. */}}
+{{- $streamStorage := lower (default "memory" .Values.queueRouting.streamStorage) }}
+{{- if not (has $streamStorage (list "memory" "file")) }}
+  {{- fail (printf "queueRouting.streamStorage=%q is not supported; use \"memory\" (default) or \"file\"." $streamStorage) }}
+{{- end }}
+{{- if and (eq $streamStorage "file") (not .Values.nats.config.jetstream.fileStore.enabled) }}
+  {{- fail "queueRouting.streamStorage=file requires nats.config.jetstream.fileStore.enabled=true (the broker needs a JetStream file store to persist the streams)" }}
+{{- end }}
+{{- $streamReplicas := int (default 1 .Values.queueRouting.streamReplicas) }}
+{{- if lt $streamReplicas 1 }}
+  {{- fail (printf "queueRouting.streamReplicas=%d is invalid; JetStream requires at least 1." $streamReplicas) }}
+{{- end }}
+{{- if gt $streamReplicas 1 }}
+  {{- if not .Values.nats.config.cluster.enabled }}
+    {{- fail (printf "queueRouting.streamReplicas=%d requires nats.config.cluster.enabled=true (a single NATS server has no peers to replicate to, and will NOT reject the request — it reports the replica count it was asked for, so this must be caught here)" $streamReplicas) }}
+  {{- end }}
+  {{- if gt $streamReplicas (int .Values.nats.config.cluster.replicas) }}
+    {{- fail (printf "queueRouting.streamReplicas=%d exceeds nats.config.cluster.replicas=%d" $streamReplicas (int .Values.nats.config.cluster.replicas)) }}
+  {{- end }}
+{{- end }}
+{{- /* Resolve the effective payload-store URL once (helper applies the
+     auto-derivation: explicit url > clusterCache.url + /payloads > empty).
+     The chart treats a non-empty resolved URL as "payload store enabled"
+     and rejects local paths so misconfigured queue clusters fail fast.
+     Supported schemes: s3:// (AWS), gs:// (GCP), abfs:// + abfss:// (Azure
+     Data Lake Storage Gen2 / Blob via the hierarchical namespace). */}}
+{{- $payloadStoreUrl := include "sie-cluster.payloadStoreUrl" . }}
+{{- /* Payload store is required for work items >1MB in queue mode. If it is
+     enabled (default) but no URL resolves, fail loudly rather than silently
+     dropping >1MB requests at runtime. Opt out with payloadStore.enabled=false. */}}
+{{- if and (eq $routing "queue") .Values.payloadStore.enabled (not $payloadStoreUrl) }}
+  {{- fail "payloadStore.enabled=true but no payload-store URL resolved. Work items >1MB will fail without it. Set payloadStore.url to the terraform `payload_store_url` output (or workers.common.clusterCache.url for the shared bucket), or set payloadStore.enabled=false to disable. See deploy/helm/sie-cluster/README.md" }}
+{{- end }}
+{{- if $payloadStoreUrl }}
+  {{- if not (or (hasPrefix "s3://" $payloadStoreUrl) (hasPrefix "gs://" $payloadStoreUrl) (hasPrefix "abfs://" $payloadStoreUrl) (hasPrefix "abfss://" $payloadStoreUrl) (hasPrefix "oss://" $payloadStoreUrl)) }}
+    {{- fail (printf "payloadStore.url must be an object-store URL (s3://bucket/prefix, gs://bucket/prefix, abfs(s)://container@account.dfs.core.windows.net/prefix, or oss://bucket/prefix), not a local path; got %q" $payloadStoreUrl) }}
+  {{- end }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sie-cluster.gateway.serviceName" . }}
+  namespace: {{ include "sie-cluster.namespace" . }}
+  labels:
+    {{- include "sie-cluster.gateway.labels" . | nindent 4 }}
+spec:
+  {{- $gatewayReplicas := int .Values.gateway.replicas }}
+  {{- if .Values.autoscaling.enabled }}
+  {{- with (lookup "apps/v1" "Deployment" (include "sie-cluster.namespace" .) (include "sie-cluster.gateway.serviceName" .)) }}
+  {{- $gatewayReplicas = int .spec.replicas }}
+  {{- end }}
+  {{- end }}
+  # Helm 0.6.20 owned this field. Preserve the live HPA count during an
+  # autoscaling-enabled upgrade instead of resetting it to the static floor.
+  replicas: {{ $gatewayReplicas }}
+  selector:
+    matchLabels:
+      {{- include "sie-cluster.gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- /* Render selectorLabels last so user-supplied podLabels cannot
+               override the Deployment selector contract. */ -}}
+        {{- include "sie-cluster.gateway.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- with .Values.gateway.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        checksum/gpu-config: {{ include (print $.Template.BasePath "/gpu-config.yaml") . | sha256sum | quote }}
+        checksum/otel-resource: {{ include "sie-cluster.otel.resourceChecksum" . | quote }}
+    spec:
+      {{- include "sie-cluster.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "sie-cluster.serviceAccountName" . }}
+      # Derived from gateway.drain (preStop sleep + in-flight budget + the
+      # gateway's own 5s queue drain); see the helper for the arithmetic.
+      terminationGracePeriodSeconds: {{ include "sie-cluster.gateway.terminationGracePeriodSeconds" . }}
+      {{- if and .Values.config.enabled .Values.gateway.waitForConfig.enabled }}
+      # Gate the gateway on sie-config readiness before its cold-start
+      # bootstrap fires. Without this, during a rolling chart upgrade the
+      # gateway pod can come up against the OLD sie-config revision, cache
+      # its export, and then later hit an append-only conflict when the
+      # NEW sie-config publishes the same model with a changed profile
+      # config. The init container loops on sie-config's /readyz so that
+      # by the time the gateway boots, the control plane is the new
+      # revision. The gateway's own bootstrap path (
+      # state::config_bootstrap::add_model_config_authoritative) survives
+      # the race even when this gate is bypassed; this is defense in depth.
+      initContainers:
+        - name: wait-for-sie-config
+          image: {{ .Values.gateway.waitForConfig.image | default "busybox:1.37.0" | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SIE_CONFIG_READYZ_URL
+              value: "http://{{ include "sie-cluster.config.serviceName" . }}:{{ .Values.config.service.port | default 8080 }}/readyz"
+            - name: SIE_CONFIG_WAIT_TIMEOUT_SECONDS
+              value: {{ .Values.gateway.waitForConfig.timeoutSeconds | default 300 | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              deadline=$(( $(date +%s) + SIE_CONFIG_WAIT_TIMEOUT_SECONDS ))
+              echo "waiting on ${SIE_CONFIG_READYZ_URL} (timeout ${SIE_CONFIG_WAIT_TIMEOUT_SECONDS}s)"
+              while [ "$(date +%s)" -lt "$deadline" ]; do
+                if wget -q -O /dev/null --spider "${SIE_CONFIG_READYZ_URL}"; then
+                  echo "sie-config is ready"
+                  exit 0
+                fi
+                sleep 2
+              done
+              echo "timed out waiting for sie-config readyz" >&2
+              exit 1
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ include "sie-cluster.gateway.image" . }}
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # Kubernetes-based worker discovery
+            - name: SIE_GATEWAY_KUBERNETES
+              value: "true"
+            - name: SIE_GATEWAY_K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SIE_GATEWAY_K8S_SERVICE
+              value: {{ include "sie-cluster.worker.serviceName" . }}
+            - name: SIE_MULTI_ROUTER
+              value: {{ or .Values.autoscaling.enabled (gt $gatewayReplicas 1) | quote }}
+            {{- $defaultHealthMode := ternary "nats" "" (and .Values.nats.enabled .Values.workers.common.workerSidecar.enabled) }}
+            {{- $explicitHealthMode := default "" .Values.gateway.healthMode }}
+            {{- $healthMode := default $defaultHealthMode $explicitHealthMode }}
+            {{- if $healthMode }}
+            - name: SIE_GATEWAY_HEALTH_MODE
+              value: {{ $healthMode | quote }}
+            {{- end }}
+            # Available GPU types (from Helm values, survives scale-to-zero)
+            - name: SIE_GATEWAY_CONFIGURED_GPUS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "sie-cluster.fullname" . }}-gpu-config
+                  key: available-gpus
+            - name: SIE_GATEWAY_CONFIGURED_PHYSICAL_LANES
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "sie-cluster.fullname" . }}-gpu-config
+                  key: configured-physical-lanes
+            - name: SIE_GATEWAY_GPU_ALIASES
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "sie-cluster.fullname" . }}-gpu-config
+                  key: gpu-aliases
+            {{- with .Values.gateway.modelAliases }}
+            # Job/friendly model aliases (e.g. {"sql":"bf16-27b:/Qwen/Qwen3.6-27B"}).
+            # A bundle-qualified target routes that job to a precision/profile
+            # bundle (e.g. route SQL to a BF16 27B variant). Opt-in: only
+            # rendered when gateway.modelAliases is set.
+            - name: SIE_GATEWAY_MODEL_ALIASES
+              value: {{ toJson . | quote }}
+            {{- end }}
+            # Machine profiles (JSON format for pool validation and routing)
+            - name: SIE_GATEWAY_MACHINE_PROFILES
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "sie-cluster.fullname" . }}-gpu-config
+                  key: machine-profiles
+            # Logging configuration
+            - name: SIE_LOG_LEVEL
+              value: {{ .Values.logging.level | quote }}
+            {{- if .Values.logging.json }}
+            - name: SIE_LOG_JSON
+              value: "true"
+            {{- end }}
+            # Gateway auth (static token)
+            - name: SIE_AUTH_MODE
+              value: {{ .Values.gateway.auth.mode | quote }}
+            {{- if .Values.gateway.auth.tokenSecretName }}
+            - name: SIE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gateway.auth.tokenSecretName }}
+                  key: {{ .Values.gateway.auth.tokenSecretKey }}
+            {{- end }}
+            {{- if .Values.nats.enabled }}
+            - name: SIE_NATS_URL
+              value: {{ .Values.nats.url | default (printf "nats://%s-nats:4222" .Release.Name) | quote }}
+            {{- if .Values.config.enabled }}
+            # Allowlist of `producer_id` values trusted on `sie.config.models._all`.
+            # `sie-config` publishes its POD_NAME, which is the Deployment name
+            # plus a per-replica suffix (e.g. `sie-sie-cluster-config-5f7b6d8c-kxwvr`).
+            # The Rust default of `sie-config` only matches pod names literally
+            # prefixed with `sie-config-`; under the chart's standard Helm
+            # release+name template the actual prefix is the rendered Deployment
+            # name, so we pass it explicitly. Without this, every NATS config
+            # delta is rejected as "untrusted" and the gateway only catches up
+            # via the 30s epoch poller — manifesting flaky 30s waits
+            - name: SIE_NATS_CONFIG_TRUSTED_PRODUCERS
+              value: {{ include "sie-cluster.config.serviceName" . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.queueRouting }}
+            - name: SIE_STREAM_MAX_AGE_S
+              value: {{ .streamMaxAgeSec | default 1800 | quote }}
+            # Work-queue durability. Rendered identically onto the worker
+            # sidecars: whoever creates the stream first wins, so gateway and
+            # workers must agree. Defaults are memory-backed / single-replica,
+            # i.e. unchanged from before these knobs existed.
+            - name: SIE_STREAM_STORAGE
+              value: {{ $streamStorage | quote }}
+            - name: SIE_STREAM_REPLICAS
+              value: {{ $streamReplicas | quote }}
+            {{- with .staticQueuePools }}
+            - name: SIE_GATEWAY_STATIC_QUEUE_POOLS
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.config.enabled }}
+            # URL of the sie-config control plane. The gateway uses it for
+            # the cold-start GET /v1/configs/export bootstrap and the 30-s
+            # GET /v1/configs/epoch drift poll. See
+            # packages/sie_gateway/docs/architecture-guide.md section 4.
+            - name: SIE_CONFIG_SERVICE_URL
+              value: {{ include "sie-cluster.config.internalUrl" . | quote }}
+            {{- if .Values.config.auth.adminTokenSecretName }}
+            # Shared admin secret. Gateway presents it as a bearer token on
+            # both GET /v1/configs/export (admin-auth) and
+            # GET /v1/configs/epoch. Both services read the same secret.
+            - name: SIE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.auth.adminTokenSecretName }}
+                  key: {{ .Values.config.auth.adminTokenSecretKey }}
+            {{- end }}
+            {{- end }}
+            {{- if $payloadStoreUrl }}
+            - name: SIE_PAYLOAD_STORE_URL
+              value: {{ $payloadStoreUrl | quote }}
+            - name: SIE_PAYLOAD_STORE_TTL
+              value: {{ .Values.payloadStore.ttlSeconds | quote }}
+            {{- end }}
+            {{- if or .Values.gateway.embeddedConfigs.enabled .Values.gateway.configMap.enabled }}
+            # Optional ConfigMap overlay: when enabled, the gateway reads its
+            # bundle/model seed from /configs at startup. By default neither
+            # overlay is on and the gateway fetches everything from sie-config
+            # via /v1/configs/bundles + /v1/configs/export; see
+            # packages/sie_gateway/src/state/config_bootstrap.rs.
+            - name: SIE_BUNDLES_DIR
+              value: /configs/bundles
+            - name: SIE_MODELS_DIR
+              value: /configs/models
+            {{- end }}
+            {{- if .Values.gateway.configMap.enabled }}
+            # Enable hot reload for ConfigMap-based configs (kubelet syncs changes to mounted volume)
+            - name: SIE_GATEWAY_HOT_RELOAD
+              value: "true"
+            # Use polling watcher for ConfigMap (inotify doesn't work with K8s symlink-based mounts)
+            - name: SIE_GATEWAY_POLLING_WATCHER
+              value: "true"
+            {{- end }}
+            {{- if eq (include "sie-cluster.otel.signalsEnabled" .) "true" }}
+            {{- include "sie-cluster.otel.env" (dict "root" . "serviceName" .Values.observability.otel.serviceName.gateway "instanceSuffix" "gateway" "collectorReceiver" "gateway") | nindent 12 }}
+            {{- end }}
+            {{- with .Values.gateway.extraEnv }}
+            # Operator-supplied env passthrough (parity with workers.common.extraEnv).
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- $preStopSleepS := int (include "sie-cluster.gateway.preStopSleepSeconds" .) }}
+          {{- if gt $preStopSleepS 0 }}
+          lifecycle:
+            preStop:
+              # Hold the pod open after it leaves the EndpointSlice so
+              # kube-proxy/ingress stop sending it new requests BEFORE the
+              # process is signalled. Without it every rolling deploy, node
+              # drain and KEDA scale-in cuts live connections (SSE generation
+              # streams, queued-result waits) at SIGTERM.
+              #
+              # The native sleep action is used because the gateway image is
+              # distroless (packages/sie_gateway/Dockerfile) and has no shell
+              # or `sleep` binary for an exec hook like the worker's. Needs
+              # Kubernetes >= 1.30 (PodLifecycleSleepAction, beta and on by
+              # default there, GA in 1.33); an older API server drops the
+              # field, which loses the delay but breaks nothing.
+              sleep:
+                seconds: {{ $preStopSleepS }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            {{- toYaml .Values.gateway.probes.startup | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            {{- toYaml .Values.gateway.probes.liveness | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            {{- toYaml .Values.gateway.probes.readiness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          {{- if or .Values.gateway.embeddedConfigs.enabled .Values.gateway.configMap.enabled }}
+          volumeMounts:
+            {{- if .Values.gateway.embeddedConfigs.enabled }}
+            - name: bundles-config
+              mountPath: /configs/bundles
+              readOnly: true
+            - name: models-config
+              mountPath: /configs/models
+              readOnly: true
+            {{- else if .Values.gateway.configMap.enabled }}
+            - name: config-repo
+              mountPath: /configs
+              readOnly: true
+            {{- end }}
+          {{- end }}
+
+      {{- if or .Values.gateway.embeddedConfigs.enabled .Values.gateway.configMap.enabled }}
+      volumes:
+        {{- if .Values.gateway.embeddedConfigs.enabled }}
+        # Auto-generated ConfigMaps from chart files/bundles and files/models
+        - name: bundles-config
+          configMap:
+            name: {{ include "sie-cluster.fullname" . }}-bundles
+        - name: models-config
+          configMap:
+            name: {{ include "sie-cluster.fullname" . }}-models
+            # With flat YAML structure, configs are directly in models/ directory
+            items:
+              {{- range $path, $_ := .Files.Glob "files/models/*.yaml" }}
+              {{- $parts := splitList "/" $path }}
+              {{- $filename := index $parts (sub (len $parts) 1) }}
+              - key: {{ $filename }}
+                path: {{ $filename }}
+              {{- end }}
+        {{- else if .Values.gateway.configMap.enabled }}
+        - name: config-repo
+          projected:
+            sources:
+              - configMap:
+                  name: {{ .Values.gateway.configMap.bundlesConfigMap | default (printf "%s-bundles" .Values.gateway.configMap.name) }}
+                  items:
+                    {{- range .Values.gateway.configMap.bundles }}
+                    - key: {{ .key }}
+                      path: bundles/{{ .file }}
+                    {{- end }}
+              - configMap:
+                  name: {{ .Values.gateway.configMap.modelsConfigMap | default (printf "%s-models" .Values.gateway.configMap.name) }}
+                  items:
+                    {{- range .Values.gateway.configMap.models }}
+                    - key: {{ .key }}
+                      path: models/{{ .key }}.yaml
+                    {{- end }}
+        {{- end }}
+
+      {{- end }}
+      {{- with .Values.gateway.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gateway.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- else }}
+      affinity:
+        # Prefer spreading gateway replicas across nodes, mirroring the worker
+        # StatefulSet. Without it two replicas can co-schedule and a single
+        # node drain takes the whole edge out at once. Preferred (not
+        # required) so single-node dev clusters still schedule every replica.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "sie-cluster.gateway.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      {{- with .Values.gateway.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

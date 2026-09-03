@@ -1,0 +1,12 @@
+# Virtual workspace over the public Rust crates: one lockfile, one `cargo deny`
+# sweep, and one dependency-resolution surface. The root Cargo.toml, Cargo.lock,
+# and deny.toml are published verbatim so a public checkout is a complete,
+# buildable workspace.
+[workspace]
+resolver = "2"
+members = [
+    "packages/sie_audio_prep",
+    "packages/sie_gateway",
+    "packages/sie_server_sidecar",
+    "packages/sie_telemetry",
+]

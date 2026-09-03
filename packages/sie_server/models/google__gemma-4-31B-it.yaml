@@ -1,0 +1,401 @@
+sie_id: google/gemma-4-31B-it
+hf_id: google/gemma-4-31B-it
+hf_revision: 842da3794eaa0b77d5f08bae87a17459d91ff475
+# Gemma 4 dense 31B is served by the shared ``sglang-cu130`` bundle
+# (SGLang 0.5.13 / transformers 5.8 / CUDA 13). The BF16 checkpoint is
+# 58.25 GiB, so the requested single-H100-80GB shape uses SGLang online FP8
+# weight quantization while retaining the checkpoint's bfloat16 compute dtype.
+# This leaves activation/KV headroom without introducing a one-model bundle.
+inputs:
+  text: true
+  image: true
+  audio: false
+  video: false
+tasks:
+  generate:
+    # Native context is 262,144 tokens. Keep the bare served contract at 8K
+    # and expose the native-window candidates through explicit profiles below.
+    context_length: 8192
+    max_output_tokens: 4096
+    # Frozen-KV MTP is not used for constrained decoding. Route grammar
+    # requests to the matching non-speculative H100 sibling below.
+    grammar_profile: no-spec
+    capabilities:
+      grammar: ["json_schema", "regex"]
+      streaming: true
+      tools: true
+    chat_template_kwargs:
+      enable_thinking: false
+max_sequence_length: 8192
+profiles:
+  # Bare-id serving defaults to the measured H100-80GB FP8 + paired-MTP shape.
+  # Three verification steps and four draft tokens preserve the assistant's
+  # near-perfect acceptance while avoiding the prompt-sensitive tail measured
+  # with the deeper 5/6 and 8/9 settings.
+  default:
+    max_batch_tokens: 16384
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.gemma:SGLangGemmaAdapter
+    kv_budget_tokens: 8192
+    adapter_options:
+      loadtime:
+        mem_fraction_static: 0.80
+        served_model_name: google/gemma-4-31B-it
+        attention_backend: triton
+        grammar_backend: xgrammar
+        reasoning_parser: gemma4
+        tool_call_parser: gemma4
+        speculative_needs_extra_buffer: false
+        speculative:
+          enabled: true
+          algorithm: nextn
+          num_steps: 3
+          eagle_topk: 1
+          num_draft_tokens: 4
+          draft_model: google/gemma-4-31B-it-assistant
+          draft_model_revision: 627c5ec1458b9086b841a91e0512fd31fd2fbbf1
+        extra_launch_args:
+          - "--quantization"
+          - "fp8"
+      runtime:
+        first_chunk_timeout_s: 90
+        inter_chunk_timeout_s: 15
+        overall_timeout_s: 600
+        # Official Gemma 4 non-thinking sampling recipe.
+        default_sampling:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 64
+          min_new_tokens: 1
+        stop_tokens:
+          - "<end_of_turn>"
+  # Grammar-safe sibling of the bare H100 profile. Keep the complete load-time
+  # block because extending profiles replace, rather than merge, that block.
+  no-spec:
+    extends: default
+    adapter_options:
+      loadtime:
+        mem_fraction_static: 0.80
+        served_model_name: google/gemma-4-31B-it
+        attention_backend: triton
+        grammar_backend: xgrammar
+        reasoning_parser: gemma4
+        tool_call_parser: gemma4
+        speculative_needs_extra_buffer: false
+        speculative:
+          enabled: false
+        extra_launch_args:
+          - "--quantization"
+          - "fp8"
+  # Caller-visible FP8 alias; select the H100-80GB machine profile separately.
+  h100-fp8:
+    extends: default
+  # Gemma 4 supports an explicit tokenizer thinking switch. Use the measured
+  # H100 96K shape so the generic reasoning alias has the same decode budget as
+  # its hardware-explicit twin; the bare route remains answer-only.
+  thinking:
+    extends: h100-96k-thinking
+    grammar_profile: h100-96k-thinking-no-spec
+  # Explicit native-window shape for one H200 admission. Keep the profile
+  # standalone so the thinking and hardware-explicit aliases can inherit the
+  # exact CUDA 13 launch shape without profile chaining. Online FP8 limits
+  # weight memory, and FP8 E4M3 limits KV memory; the release gate separately
+  # validates near-boundary decode and quality instead of weakening the
+  # conservative bare-model contract.
+  long-context:
+    max_batch_tokens: 262144
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.gemma:SGLangGemmaAdapter
+    grammar_profile: long-context-no-spec
+    kv_budget_tokens: 262144
+    adapter_options:
+      loadtime:
+        max_seq_length: 262144
+        # Leave transient FP8 GEMM workspace outside SGLang's static pool.
+        mem_fraction_static: 0.90
+        served_model_name: google/gemma-4-31B-it
+        attention_backend: triton
+        grammar_backend: xgrammar
+        reasoning_parser: gemma4
+        tool_call_parser: gemma4
+        speculative_needs_extra_buffer: false
+        speculative:
+          enabled: true
+          algorithm: nextn
+          num_steps: 3
+          eagle_topk: 1
+          num_draft_tokens: 4
+          draft_model: google/gemma-4-31B-it-assistant
+          draft_model_revision: 627c5ec1458b9086b841a91e0512fd31fd2fbbf1
+        extra_launch_args:
+          - "--quantization"
+          - "fp8"
+          - "--kv-cache-dtype"
+          - "fp8_e4m3"
+      runtime:
+        first_chunk_timeout_s: 900
+        inter_chunk_timeout_s: 30
+        overall_timeout_s: 1800
+        default_sampling:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 64
+          min_new_tokens: 1
+        stop_tokens:
+          - "<end_of_turn>"
+  # Grammar-safe twin of the measured H200 256K launch. Frozen-KV MTP is the
+  # only load-time difference because constrained decode must use the grammar
+  # FSM on every emitted token.
+  long-context-no-spec:
+    extends: long-context
+    adapter_options:
+      loadtime:
+        max_seq_length: 262144
+        mem_fraction_static: 0.90
+        served_model_name: google/gemma-4-31B-it
+        attention_backend: triton
+        grammar_backend: xgrammar
+        reasoning_parser: gemma4
+        tool_call_parser: gemma4
+        speculative_needs_extra_buffer: false
+        speculative:
+          enabled: false
+        extra_launch_args:
+          - "--quantization"
+          - "fp8"
+          - "--kv-cache-dtype"
+          - "fp8_e4m3"
+  # Keep the thinking route standalone so it can retain its larger output cap
+  # while using the same measured paired-MTP launch as the non-thinking route.
+  long-context-thinking:
+    grammar_profile: long-context-thinking-no-spec
+    # The 4K control truncated otherwise-correct reasoning on 2/10 MMLU-Pro
+    # rows. A 32K cap leaves ample room for the final answer without changing
+    # the profile's sampling defaults or forcing callers to request it.
+    max_output_tokens: 32768
+    max_batch_tokens: 262144
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.gemma:SGLangGemmaAdapter
+    kv_budget_tokens: 262144
+    chat_template_kwargs:
+      enable_thinking: true
+    adapter_options:
+      loadtime:
+        max_seq_length: 262144
+        mem_fraction_static: 0.90
+        served_model_name: google/gemma-4-31B-it
+        attention_backend: triton
+        grammar_backend: xgrammar
+        reasoning_parser: gemma4
+        tool_call_parser: gemma4
+        speculative_needs_extra_buffer: false
+        speculative:
+          enabled: true
+          algorithm: nextn
+          num_steps: 3
+          eagle_topk: 1
+          num_draft_tokens: 4
+          draft_model: google/gemma-4-31B-it-assistant
+          draft_model_revision: 627c5ec1458b9086b841a91e0512fd31fd2fbbf1
+        extra_launch_args:
+          - "--quantization"
+          - "fp8"
+          - "--kv-cache-dtype"
+          - "fp8_e4m3"
+      runtime:
+        first_chunk_timeout_s: 900
+        inter_chunk_timeout_s: 30
+        overall_timeout_s: 1800
+        default_sampling:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 64
+          min_new_tokens: 1
+        stop_tokens:
+          - "<end_of_turn>"
+  long-context-thinking-no-spec:
+    max_output_tokens: 32768
+    max_batch_tokens: 262144
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.gemma:SGLangGemmaAdapter
+    kv_budget_tokens: 262144
+    chat_template_kwargs:
+      enable_thinking: true
+    adapter_options:
+      loadtime:
+        max_seq_length: 262144
+        mem_fraction_static: 0.90
+        served_model_name: google/gemma-4-31B-it
+        attention_backend: triton
+        grammar_backend: xgrammar
+        reasoning_parser: gemma4
+        tool_call_parser: gemma4
+        speculative_needs_extra_buffer: false
+        speculative:
+          enabled: false
+        extra_launch_args:
+          - "--quantization"
+          - "fp8"
+          - "--kv-cache-dtype"
+          - "fp8_e4m3"
+      runtime:
+        first_chunk_timeout_s: 900
+        inter_chunk_timeout_s: 30
+        overall_timeout_s: 1800
+        default_sampling:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 64
+          min_new_tokens: 1
+        stop_tokens:
+          - "<end_of_turn>"
+  # H200 has enough memory for the native window. These aliases expose the
+  # tested hardware/context pairing while machine placement remains separate.
+  h200-256k:
+    extends: long-context
+    grammar_profile: long-context-no-spec
+  h200-256k-thinking:
+    extends: long-context-thinking
+    grammar_profile: long-context-thinking-no-spec
+  # On H100-80GB this MTP launch shape measured a 108,896-token KV capacity.
+  # Cap the public profile at 96K to leave room for the chat template and
+  # decode; never use SGLang auto-truncation to simulate a larger accepted
+  # context.
+  h100-96k:
+    max_batch_tokens: 98304
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.gemma:SGLangGemmaAdapter
+    grammar_profile: h100-96k-no-spec
+    kv_budget_tokens: 98304
+    adapter_options:
+      loadtime:
+        max_seq_length: 98304
+        mem_fraction_static: 0.90
+        served_model_name: google/gemma-4-31B-it
+        attention_backend: triton
+        grammar_backend: xgrammar
+        reasoning_parser: gemma4
+        tool_call_parser: gemma4
+        speculative_needs_extra_buffer: false
+        speculative:
+          enabled: true
+          algorithm: nextn
+          num_steps: 3
+          eagle_topk: 1
+          num_draft_tokens: 4
+          draft_model: google/gemma-4-31B-it-assistant
+          draft_model_revision: 627c5ec1458b9086b841a91e0512fd31fd2fbbf1
+        extra_launch_args:
+          - "--quantization"
+          - "fp8"
+          - "--kv-cache-dtype"
+          - "fp8_e4m3"
+      runtime:
+        first_chunk_timeout_s: 900
+        inter_chunk_timeout_s: 30
+        overall_timeout_s: 1800
+        default_sampling:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 64
+          min_new_tokens: 1
+        stop_tokens:
+          - "<end_of_turn>"
+  h100-96k-no-spec:
+    extends: h100-96k
+    adapter_options:
+      loadtime:
+        max_seq_length: 98304
+        mem_fraction_static: 0.90
+        served_model_name: google/gemma-4-31B-it
+        attention_backend: triton
+        grammar_backend: xgrammar
+        reasoning_parser: gemma4
+        tool_call_parser: gemma4
+        speculative_needs_extra_buffer: false
+        speculative:
+          enabled: false
+        extra_launch_args:
+          - "--quantization"
+          - "fp8"
+          - "--kv-cache-dtype"
+          - "fp8_e4m3"
+  h100-96k-thinking:
+    grammar_profile: h100-96k-thinking-no-spec
+    max_output_tokens: 32768
+    max_batch_tokens: 98304
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.gemma:SGLangGemmaAdapter
+    kv_budget_tokens: 98304
+    chat_template_kwargs:
+      enable_thinking: true
+    adapter_options:
+      loadtime:
+        max_seq_length: 98304
+        mem_fraction_static: 0.90
+        served_model_name: google/gemma-4-31B-it
+        attention_backend: triton
+        grammar_backend: xgrammar
+        reasoning_parser: gemma4
+        tool_call_parser: gemma4
+        speculative_needs_extra_buffer: false
+        speculative:
+          enabled: true
+          algorithm: nextn
+          num_steps: 3
+          eagle_topk: 1
+          num_draft_tokens: 4
+          draft_model: google/gemma-4-31B-it-assistant
+          draft_model_revision: 627c5ec1458b9086b841a91e0512fd31fd2fbbf1
+        extra_launch_args:
+          - "--quantization"
+          - "fp8"
+          - "--kv-cache-dtype"
+          - "fp8_e4m3"
+      runtime:
+        first_chunk_timeout_s: 900
+        inter_chunk_timeout_s: 30
+        overall_timeout_s: 1800
+        default_sampling:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 64
+          min_new_tokens: 1
+        stop_tokens:
+          - "<end_of_turn>"
+  h100-96k-thinking-no-spec:
+    max_output_tokens: 32768
+    max_batch_tokens: 98304
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.gemma:SGLangGemmaAdapter
+    kv_budget_tokens: 98304
+    chat_template_kwargs:
+      enable_thinking: true
+    adapter_options:
+      loadtime:
+        max_seq_length: 98304
+        mem_fraction_static: 0.90
+        served_model_name: google/gemma-4-31B-it
+        attention_backend: triton
+        grammar_backend: xgrammar
+        reasoning_parser: gemma4
+        tool_call_parser: gemma4
+        speculative_needs_extra_buffer: false
+        speculative:
+          enabled: false
+        extra_launch_args:
+          - "--quantization"
+          - "fp8"
+          - "--kv-cache-dtype"
+          - "fp8_e4m3"
+      runtime:
+        first_chunk_timeout_s: 900
+        inter_chunk_timeout_s: 30
+        overall_timeout_s: 1800
+        default_sampling:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 64
+          min_new_tokens: 1
+        stop_tokens:
+          - "<end_of_turn>"

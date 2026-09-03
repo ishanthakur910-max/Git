@@ -1,0 +1,25 @@
+{{- $logs := .Values.observability.logs -}}
+{{- $logsInstall := get $logs "install" -}}
+{{- $logsForceOn := and (kindIs "bool" $logsInstall) $logsInstall -}}
+{{- $logsForceOff := and (kindIs "bool" $logsInstall) (not $logsInstall) -}}
+{{- $alloyInstall := default false (get (get $logs "alloy") "install") -}}
+{{- if or $logsForceOn (and (not $logsForceOff) $alloyInstall) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # Name and key must stay in sync with alloy.alloy.configMap.name / key in values.yaml.
+  name: {{ .Values.alloy.alloy.configMap.name }}
+  # The Alloy dependency deploys in Helm's release namespace and ConfigMaps
+  # cannot be mounted across namespaces.
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sie-cluster.labels" . | nindent 4 }}
+data:
+  {{ .Values.alloy.alloy.configMap.key }}: |
+    {{- $configuredLokiUrl := default "" (get (get .Values.alloy "logs") "lokiUrl") -}}
+    {{- $lokiUrl := $configuredLokiUrl -}}
+    {{- if or (not $lokiUrl) (eq $lokiUrl "http://loki:3100/loki/api/v1/push") -}}
+    {{- $lokiUrl = printf "%s/loki/api/v1/push" (include "sie-cluster.loki.httpEndpoint" .) -}}
+    {{- end -}}
+    {{- .Files.Get "files/alloy/config.alloy" | replace "http://loki:3100/loki/api/v1/push" $lokiUrl | nindent 4 }}
+{{- end }}

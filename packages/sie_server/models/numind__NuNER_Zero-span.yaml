@@ -1,0 +1,20 @@
+sie_id: numind/NuNER_Zero-span
+hf_id: numind/NuNER_Zero-span
+hf_revision: 063b4dec1aaf626058e7c071657b15d52abffca0
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode: null
+  score: null
+  extract: {}
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.gliner:GLiNERAdapter
+    adapter_options:
+      loadtime: {}
+      runtime: {}

@@ -1,0 +1,46 @@
+{
+  "document_type": "Distributor Agreement",
+  "parties": [
+    "Electric City Corp. (Company)",
+    "Electric City of Illinois L.L.C. (Distributor)"
+  ],
+  "effective_date": "unknown",
+  "renewal_terms": "Conditional annual one-year renewals for up to ten additional years if Distributor complies with the Agreement (Section 1.3). Missing explicit renewal election or notice mechanics.",
+  "governing_law": "Illinois",
+  "executed": false,
+  "key_obligations": [
+    "Company appoints Distributor as exclusive distributor in the Illinois Market (Section 1.1)",
+    "Ten-year initial term beginning on delivery of last Sample, renewable annually for up to ten additional years if Distributor complies with the Agreement (Section 1.3)",
+    "Distributor must issue an irrevocable $500,000 letter of credit (Section 1.6)",
+    "Distributor must place a $250,000 purchase order by the first day of each month (Section 1.6)",
+    "Distributor must purchase at least 375 units in the first Product Year (Section 1.6)",
+    "Distributor must submit quarterly written reports during the first year (Section 4.1)"
+  ],
+  "risk_flags": [
+    {
+      "clause": "Section 1.3",
+      "issue": "Missing explicit renewal election or notice mechanics.",
+      "severity": "high",
+      "suggested_redline": "Add explicit language requiring Distributor to provide written notice of its election to renew at least 90 days prior to the expiration of the then-current Term."
+    },
+    {
+      "clause": "Section 4.2",
+      "issue": "30 days is the termination-notice period; the separate cure period is an undefined commercially reasonable time. Curable defaults do have that cure period.",
+      "severity": "high",
+      "suggested_redline": "Replace 'commercially reasonable time' with a specific, fixed number of days (e.g., 30 days) for curing any material default after receipt of written notice."
+    },
+    {
+      "clause": "Section 4.4",
+      "issue": "Company generally may, at its option, repurchase; but Company shall repurchase unopened Product when it terminates without cause for reasons other than Distributor's minimum failure. The clear mandatory exception protects that scenario; the risk is inventory exposure after other expirations or terminations, where repurchase remains optional.",
+      "severity": "medium",
+      "suggested_redline": "Change 'may, at its option... repurchase' to 'shall repurchase' for all Products in Distributor's possession upon any expiration or termination, regardless of cause."
+    },
+    {
+      "clause": "Section 5.3",
+      "issue": "Each party covers its own breach, negligence, and IP violations; the Distributor-specific indemnity applies only when Company is not at fault.",
+      "severity": "high",
+      "suggested_redline": "Remove the 'provided that Company is not at fault' condition from the Distributor\u2019s indemnification obligation to ensure full coverage for claims arising from Distributor\u2019s sales and marketing practices."
+    }
+  ],
+  "recommendation": "Execution is not established from the visible signature page: one explicit /s/Joseph Marino mark and Jim Stump's typed signatory block are visible, but no execution dates are visible. Negotiate explicit renewal election and notice mechanics in Section 1.3; replace undefined cure period in Section 4.2 with a fixed number of days; change optional repurchase language in Section 4.4 to mandatory 'shall repurchase' for all Products upon expiration or termination regardless of cause; and remove the 'provided that Company is not at fault' condition from Distributor's indemnification obligation in Section 5.3."
+}

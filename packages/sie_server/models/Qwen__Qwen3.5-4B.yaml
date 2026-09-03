@@ -1,0 +1,349 @@
+sie_id: Qwen/Qwen3.5-4B
+hf_id: Qwen/Qwen3.5-4B
+hf_revision: 851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a
+inputs:
+  # Qwen3.5-4B is a unified vision-language model (Gated DeltaNet + sparse MoE
+  # with an integrated vision encoder). The wire surface accepts text+image
+  # via SIE-native generate (inline ``images``) and the OpenAI chat-completions
+  # schema (``image_url`` content parts); video is documented by Qwen but not
+  # yet wired through the SIE gateway.
+  text: true
+  image: true
+  audio: false
+  video: false
+tasks:
+  generate:
+    # Native context length is 262,144 tokens (YaRN extends to ~1M).
+    # Keep the bare request context at 8192. The explicit ``:long-context``
+    # profile below exposes the already-measured 32K A100 launch shape without
+    # widening latency/capacity expectations for every caller.
+    context_length: 8192
+    max_output_tokens: 4096
+    # Route grammar-constrained requests (response_format / grammar) to the
+    # non-speculative variant. The free-text profiles run NEXTN
+    # speculative decoding for free-text throughput, but NEXTN bypasses SGLang's
+    # Outlines grammar FSM (leaks out-of-schema keys, truncates mid-JSON —
+    # verified on L4). The `no-spec` profile (speculative off, same Outlines
+    # backend) enforces the grammar correctly; the gateway rewrites grammar
+    # requests to `Qwen/Qwen3.5-4B:no-spec` so free-text keeps NEXTN.
+    grammar_profile: no-spec
+    capabilities:
+      # NOTE: scoped to what the production backend (``outlines``, set
+      # per-profile under ``adapter_options.loadtime``) actually supports
+      # on SGLang. SGLang's outlines_backend explicitly skips ebnf with
+      # ``Skip unsupported key_type='ebnf'`` — confirmed by a compatibility smoke.
+      # If an operator switches a Qwen3.5 profile to ``grammar_backend:
+      # xgrammar`` they should re-add ``"ebnf"`` here — xgrammar smoke on
+      # the same hardware passed all three modes (regex/json_schema/ebnf).
+      grammar: ["json_schema", "regex"]
+      streaming: true
+      tools: true
+      # NOTE: not advertising code:true here yet — Qwen3.5-4B is the strongest
+      # model on paper but its NEXTN/hybrid serving path does not come up
+      # reliably on the current eval image, so it has no measured HumanEval/MBPP
+      # baseline. The ``model="code"`` alias points to the measured
+      # Qwen3-4B-Instruct-2507; promote this once 3.5-4B is measured.
+    # Grammar backend: ``outlines`` (set per-profile under
+    # ``adapter_options.loadtime``). Earlier revisions forced ``xgrammar``
+    # here because the worker-side Outlines preflight (``compile_outlines``)
+    # crashed on Qwen3.5 with ``'TokenizersBackend' object has no attribute
+    # 'vocabulary'`` — it passed the raw transformers>=5 tokenizer straight
+    # to Outlines' processor factories. That preflight now wraps the
+    # tokenizer in Outlines' ``TransformerTokenizer`` adapter (the same wrap
+    # SGLang does internally), so ``outlines`` works for json_schema/regex.
+    # EBNF is *not* in capabilities because SGLang's outlines_backend does
+    # not implement it (the smoke surfaces this with a 400). If you need
+    # EBNF on Qwen3.5, switch the profile to ``grammar_backend: xgrammar``
+    # and re-add ``"ebnf"`` to the capability list above.
+    # Qwen3.5 emits ``<think>...</think>`` reasoning by default
+    # ("Qwen3.5 will think by default before response", per model card).
+    # We disable it for the benchmark / OpenAI-compat path so the
+    # visible output is the answer only. Operators wanting CoT can
+    # flip this profile-side.
+    chat_template_kwargs:
+      enable_thinking: false
+    prewarm_grammars:
+      # NOTE: Outlines regexes are IMPLICITLY ANCHORED and its FSM engine
+      # (interegular) rejects ``^``/``$`` anchors with
+      # ``interegular.patterns.Unsupported`` — which, unhandled inside
+      # SGLang's scheduler thread, SIGQUITs the whole server. XGrammar
+      # tolerated anchors; Outlines does not. So write the bare pattern
+      # (``(yes|no)``, not ``^(yes|no)$``). The worker-side preflight
+      # (``compile_outlines``) catches a stray anchored regex as
+      # ``grammar_compile_failed`` before it can reach — and crash — SGLang.
+      - name: yes_no
+        kind: regex
+        value: "(yes|no)"
+      - name: short_answer
+        kind: json_schema
+        value:
+          type: object
+          properties:
+            answer:
+              type: string
+          required: [answer]
+max_sequence_length: 8192
+# ── KV-cache math (empirical, 2026-05-18) ──
+#
+# Qwen3.5-4B uses a hybrid Gated DeltaNet + Gated Attention architecture
+# where 24 of 32 layers are recurrent (DeltaNet) and only 8 are KV-cache
+# bearing (Gated Attention with 4 KV heads × head_dim=256). The mamba
+# scheduler reserves additional state buffers for the recurrent layers
+# (``--mamba-scheduler-strategy extra_buffer`` is required for NEXTN spec
+# decoding to coexist with the radix cache). Effective KV memory ends up
+# much smaller than a comparable dense 4B model because the recurrent
+# buffer eats roughly ``mamba_full_memory_ratio=0.9`` of the static
+# allocation.
+#
+# Empirical SGLang ``/get_server_info`` dump (sglang 0.5.10, NEXTN on,
+# ``--mamba-scheduler-strategy extra_buffer``):
+#
+#   L4 (22 GB), mem_fraction_static=0.90, context_length=2048 OR 8192:
+#     weight=8.62 GB, kvcache=0.96 GB, token_capacity=31,610
+#     effective_max_running_requests_per_dp = 3
+#     (context_length above 8192 OOMs on L4)
+#
+#   A100-40GB, mem_fraction_static=0.85, context_length=32768:
+#     max_total_num_tokens=847,848, max_req_input_len=32,762
+#     effective_max_running_requests_per_dp = 48
+#
+# ``kv_budget_tokens`` is sized at ``token_capacity / 4``, matching the
+# pattern set by Qwen3-4B-Instruct-2507. Re-calibrate with an SGLang capacity
+# probe if its version or ``mem_fraction_static`` changes.
+profiles:
+  # The bare model is the measured production A100-40GB shape. The
+  # ``a100-40gb`` alias below preserves the resolved profile identity used by
+  # the checked-in acceptance evidence; new callers should use the bare id.
+  default:
+    max_batch_tokens: 32768
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.generation:SGLangGenerationAdapter
+    # Empirical: 847,848 / 4 = 211,962 → round to 210,944 (= 206 × 1024).
+    kv_budget_tokens: 210944
+    adapter_options:
+      loadtime:
+        # Apple-Silicon (MLX) repo served by the MLX subprocess backend. On
+        # non-CUDA devices SGLangGenerationAdapter.create_for_device swaps to
+        # MLXGenerationAdapter, which reads this. Ignored on CUDA (SGLang
+        # swallows it via **kwargs).
+        mlx_repo: mlx-community/Qwen3.5-4B-4bit
+        mem_fraction_static: 0.85
+        served_model_name: Qwen/Qwen3.5-4B
+        disable_cuda_graph: true
+        attention_backend: triton
+        grammar_backend: outlines
+        reasoning_parser: qwen3
+        tool_call_parser: qwen3_coder
+        # NEXTN/MTP per the Qwen3.5-4B model card recipe. SGLang 0.5.10
+        # implements NEXTN under the EAGLE codepath internally; the
+        # ``/server_info`` dump reports ``speculative_algorithm: EAGLE``
+        # — that is expected and not a misconfiguration.
+        speculative:
+          enabled: true
+          algorithm: nextn
+          num_steps: 3
+          eagle_topk: 1
+          num_draft_tokens: 4
+        # Required for NEXTN spec decoding to coexist with radix cache
+        # on Qwen3.5's hybrid Gated DeltaNet architecture. The adapter
+        # also sets the SGLANG_ENABLE_SPEC_V2=1 env var when
+        # speculative.enabled — both are required as a pair.
+        extra_launch_args:
+          - "--mm-process-config"
+          - '{"image":{"min_pixels":65536,"max_pixels":1003520}}'
+          - "--mamba-scheduler-strategy"
+          - "extra_buffer"
+      runtime:
+        first_chunk_timeout_s: 60
+        # The Stage-5 A100-80GB c=4 OSS queue run at 37771022d observed one
+        # governed 10s inter-chunk abort in its 300-row CaseHOLD tranche. 15s
+        # matches sibling large-generation profiles while preserving the 300s
+        # overall bound; the single full rerun remains required for promotion.
+        inter_chunk_timeout_s: 15
+        overall_timeout_s: 300
+        default_sampling:
+          temperature: 0.7
+          top_p: 0.8
+          presence_penalty: 1.5
+        stop_tokens:
+          - "<|im_end|>"
+  # Historical acceptance-benchmark identity. Keep it as a zero-delta alias so
+  # those results remain reproducible while production uses the bare model id.
+  a100-40gb:
+    extends: default
+  # Explicit reasoning mode. The tokenizer switch changes output semantics,
+  # so it is a named profile rather than the bare model default. Thinking uses
+  # Qwen's recommended sampling recipe; the launch shape remains the measured
+  # A100 default.
+  thinking:
+    extends: default
+    chat_template_kwargs:
+      enable_thinking: true
+    adapter_options:
+      runtime:
+        first_chunk_timeout_s: 60
+        inter_chunk_timeout_s: 15
+        overall_timeout_s: 300
+        default_sampling:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 20
+          presence_penalty: 1.5
+        stop_tokens:
+          - "<|im_end|>"
+  # The checkpoint is native to 262K and the checked-in A100 calibration
+  # already boots SGLang at 32K. Expose that conservative measured window as
+  # an opt-in variant while the bare model remains 8K.
+  long-context:
+    extends: default
+    adapter_options:
+      loadtime:
+        max_seq_length: 32768
+        mlx_repo: mlx-community/Qwen3.5-4B-4bit
+        mem_fraction_static: 0.85
+        served_model_name: Qwen/Qwen3.5-4B
+        disable_cuda_graph: true
+        attention_backend: triton
+        grammar_backend: outlines
+        reasoning_parser: qwen3
+        tool_call_parser: qwen3_coder
+        speculative:
+          enabled: true
+          algorithm: nextn
+          num_steps: 3
+          eagle_topk: 1
+          num_draft_tokens: 4
+        extra_launch_args:
+          - "--mm-process-config"
+          - '{"image":{"min_pixels":65536,"max_pixels":1003520}}'
+          - "--mamba-scheduler-strategy"
+          - "extra_buffer"
+  # L4 is severely constrained for Qwen3.5-4B + NEXTN — fits only ~3
+  # concurrent requests, context cap ≈ 8192. Use this explicit profile for
+  # smoke / c=1 only; it is not the production default.
+  l4-smoke:
+    max_batch_tokens: 8192
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.generation:SGLangGenerationAdapter
+    # Empirical: 31,610 / 4 = 7,902 → round to 7,168 (= 7 × 1024).
+    kv_budget_tokens: 7168
+    adapter_options:
+      loadtime:
+        mlx_repo: mlx-community/Qwen3.5-4B-4bit
+        # Empirical floor on L4 — anything lower OOMs at model load.
+        mem_fraction_static: 0.90
+        served_model_name: Qwen/Qwen3.5-4B
+        disable_cuda_graph: true
+        attention_backend: triton
+        grammar_backend: outlines
+        reasoning_parser: qwen3
+        tool_call_parser: qwen3_coder
+        speculative:
+          enabled: true
+          algorithm: nextn
+          num_steps: 3
+          eagle_topk: 1
+          num_draft_tokens: 4
+        extra_launch_args:
+          - "--mm-process-config"
+          - '{"image":{"min_pixels":65536,"max_pixels":1003520}}'
+          - "--mamba-scheduler-strategy"
+          - "extra_buffer"
+          - "--disable-overlap-schedule"
+      runtime:
+        first_chunk_timeout_s: 60
+        inter_chunk_timeout_s: 10
+        overall_timeout_s: 300
+        default_sampling:
+          temperature: 0.7
+          top_p: 0.8
+          presence_penalty: 1.5
+        stop_tokens:
+          - "<|im_end|>"
+  h100:
+    max_batch_tokens: 65536
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.generation:SGLangGenerationAdapter
+    # Analytical estimate — re-calibrate with an SGLang capacity probe once
+    # H100 access is set up. Scales ~2× off the A100-40GB number
+    # (80 GB / 40 GB), so ~420k tokens at context=32768.
+    kv_budget_tokens: 421888
+    adapter_options:
+      loadtime:
+        mem_fraction_static: 0.85
+        served_model_name: Qwen/Qwen3.5-4B
+        disable_cuda_graph: true
+        attention_backend: triton
+        grammar_backend: outlines
+        reasoning_parser: qwen3
+        tool_call_parser: qwen3_coder
+        speculative:
+          enabled: true
+          algorithm: nextn
+          num_steps: 3
+          eagle_topk: 1
+          num_draft_tokens: 4
+        extra_launch_args:
+          - "--mm-process-config"
+          - '{"image":{"min_pixels":65536,"max_pixels":1003520}}'
+          - "--mamba-scheduler-strategy"
+          - "extra_buffer"
+      runtime:
+        first_chunk_timeout_s: 60
+        inter_chunk_timeout_s: 10
+        overall_timeout_s: 300
+        default_sampling:
+          temperature: 0.7
+          top_p: 0.8
+          presence_penalty: 1.5
+        stop_tokens:
+          - "<|im_end|>"
+  # No-speculative companion for grammar-constrained requests on A100. It
+  # keeps the measured A100 runtime shape while disabling NEXTN, whose decode
+  # path bypasses the Outlines grammar FSM.
+  no-spec:
+    max_batch_tokens: 32768
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.generation:SGLangGenerationAdapter
+    # Keep the release-gated A100 budget used by the default profile. The
+    # non-speculative path may support more, but that requires a separate
+    # measured promotion.
+    kv_budget_tokens: 210944
+    adapter_options:
+      loadtime:
+        mlx_repo: mlx-community/Qwen3.5-4B-4bit
+        mem_fraction_static: 0.85
+        served_model_name: Qwen/Qwen3.5-4B
+        disable_cuda_graph: true
+        attention_backend: triton
+        grammar_backend: outlines
+        reasoning_parser: qwen3
+        tool_call_parser: qwen3_coder
+        speculative:
+          enabled: false
+        # mamba_scheduler_strategy is harmless when speculative is off;
+        # the radix-cache compatibility error only fires with spec on.
+        # Leaving the flag present keeps both profiles syntactically
+        # identical so a config diff between them shows only the
+        # speculative block (the intent of the ablation).
+        extra_launch_args:
+          - "--mm-process-config"
+          - '{"image":{"min_pixels":65536,"max_pixels":1003520}}'
+          - "--mamba-scheduler-strategy"
+          - "extra_buffer"
+      runtime:
+        # Outlines can spend more than 60s compiling/decoding larger
+        # json_schema requests before the first visible token. Keep this below
+        # overall_timeout_s so genuinely stuck requests still fail within 5 min.
+        first_chunk_timeout_s: 180
+        inter_chunk_timeout_s: 10
+        overall_timeout_s: 300
+        default_sampling:
+          temperature: 0.7
+          top_p: 0.8
+          presence_penalty: 1.5
+        stop_tokens:
+          - "<|im_end|>"
+  default-no-admission:
+    extends: default
+    admission_enabled: false

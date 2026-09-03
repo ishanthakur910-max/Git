@@ -1,0 +1,325 @@
+# syntax=docker/dockerfile:1
+# SIE Server - CUDA 12 Image
+# Build from repo root:
+#   docker build -f packages/sie_server/Dockerfile.cuda12 -t sie-server:cuda12-default .
+#   docker build -f packages/sie_server/Dockerfile.cuda12 --build-arg BUNDLE=sglang -t sie-server:cuda12-sglang .
+
+ARG BUNDLE=default
+ARG UV_VERSION=0.9.28
+
+# Build the internal Rust extension from checked-in source; it is not published
+# to PyPI.
+FROM ghcr.io/pyo3/maturin:v1.13.3 AS audio-prep-builder
+WORKDIR /io
+# The crate is a Cargo workspace member (#2339): its pins live in the root
+# Cargo.lock, and loading the workspace needs every member's manifest+sources.
+COPY Cargo.toml Cargo.lock ./
+COPY packages/sie_audio_prep/ packages/sie_audio_prep/
+COPY packages/sie_gateway/ packages/sie_gateway/
+COPY packages/sie_server_sidecar/ packages/sie_server_sidecar/
+COPY packages/sie_telemetry/ packages/sie_telemetry/
+RUN maturin build --release --locked --out /dist --manifest-path packages/sie_audio_prep/Cargo.toml
+
+# =============================================================================
+# Dependency image: uv and standalone Python 3.12
+# =============================================================================
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 AS deps
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_NO_CACHE=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_INSTALL_DIR=/opt/python \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Minimal apt footprint: just enough for curl + git; no deadsnakes PPA.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git
+
+ARG UV_VERSION
+RUN curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | sh \
+    && mv /root/.local/bin/uv /bin/uv \
+    && mv /root/.local/bin/uvx /bin/uvx
+
+# Install a standalone Python 3.12 from python-build-standalone (fully relocatable,
+# glibc 2.17+ compat). This replaces the deadsnakes PPA entirely.
+RUN uv python install 3.12 \
+    && ln -s "$(uv python find 3.12)" /usr/local/bin/python3.12 \
+    && ln -sf /usr/local/bin/python3.12 /usr/local/bin/python3 \
+    && ln -sf /usr/local/bin/python3.12 /usr/local/bin/python
+
+WORKDIR /app
+
+COPY packages/sie_sdk/pyproject.toml /tmp/sie_sdk/pyproject.toml
+COPY packages/sie_server/pyproject.toml ./pyproject.toml
+COPY --from=audio-prep-builder /dist /tmp/audio-prep-dist
+
+# Stubs for editable metadata generation — bundles/ and models/ are referenced
+# by force-include in pyproject.toml and must exist; real contents are copied
+# in the base stage.
+RUN mkdir -p /tmp/sie_sdk/src/sie_sdk src/sie_server bundles models \
+    && touch /tmp/sie_sdk/src/sie_sdk/__init__.py \
+    && touch src/sie_server/__init__.py
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3.12 -m venv .venv \
+    && .venv/bin/pip install --upgrade pip \
+    && .venv/bin/pip install \
+        /tmp/audio-prep-dist/*.whl \
+        -e "/tmp/sie_sdk[storage]" \
+        -e ".[gpu-metrics]"
+
+# =============================================================================
+# Shared CUDA base: source install and venv finalization
+# =============================================================================
+# Everything here is bundle-agnostic, so bundle-specific builds of a given
+# platform share every base image layer in local BuildKit cache and in
+# content-addressed registry layers.
+FROM deps AS base
+
+# Source-layer cache key. A rebuild once shipped STALE code: buildx
+# reused a cached source-COPY layer even though the .py files had
+# changed, so the demo had to overlay patched files by hand. Tie the
+# source layers to an explicit revision arg the CI passes per commit
+# (``--build-arg SIE_SRC_REV=$(git rev-parse --short HEAD)``) so any
+# commit forces these layers — and the editable reinstall below — to
+# rebuild. The expensive dependency install lives in the ``deps`` stage
+# ABOVE this line, so it stays cached. Bundles of the same commit share
+# the same SIE_SRC_REV, so cross-bundle layer dedup is preserved.
+ARG SIE_SRC_REV=dev
+RUN echo "sie source revision: ${SIE_SRC_REV}"
+
+COPY packages/sie_sdk/src /tmp/sie_sdk/src
+COPY packages/sie_server/src src/
+COPY packages/sie_server/bundles bundles/
+COPY packages/sie_server/models models/
+
+# Editable reinstall over the stub stage so runtime path-based lookups
+# (e.g. sie_server.cli resolve-deps reading ./bundles) keep working.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    .venv/bin/pip install --no-deps \
+        -e /tmp/sie_sdk \
+        -e .
+
+# Sanity-check shared venv imports — catches breakage introduced by the
+# shared-deps resolver. flash-attn/sglang need a real GPU and are
+# intentionally not imported here.
+RUN .venv/bin/python -c "import sie_audio_prep, torch; print(torch.__version__)"
+
+# Register bundle-libs on sys.path via a .pth file executed by site.py at
+# interpreter startup. `sys.path.insert(0, ...)` puts bundle-libs at
+# position 0 so bundle-specific versions SHADOW shared venv versions
+# (required for the transformers5 bundle). Content is identical for every
+# bundle, so writing it here keeps the shared venv layer byte-identical.
+RUN echo "import sys; sys.path.insert(0, '/app/bundle-libs')" \
+    > /app/.venv/lib/python3.12/site-packages/_sie_bundle.pth
+
+# Conservative venv cleanup — only things known to be runtime-safe. Keep
+# torch/include (triton JIT compiles against torch C++ headers for
+# sglang/flash-attn custom ops) and keep gcc/libc6-dev at runtime.
+# Main wins: byte-compiled caches, *.a static libs, and tests/. Keep wheel
+# RECORD metadata: native loaders such as tvm_ffi use it to locate packaged
+# shared libraries (including xgrammar's libxgrammar_bindings.so).
+# Runs here (not in builder) so /app/.venv reaches its final form BEFORE
+# bundle divergence, making the runtime COPY cache-hit across bundles.
+RUN set -eux; \
+    cd /app/.venv/lib/python3.12/site-packages; \
+    find . -type d -name '__pycache__' -prune -exec rm -rf {} +; \
+    find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete; \
+    find . -type d -name 'tests' -prune -exec rm -rf {} +; \
+    rm -rf torch/test torch/utils/tensorboard torch/utils/bottleneck 2>/dev/null || true; \
+    find torch -type f -name '*.a' -delete 2>/dev/null || true; \
+    # All nvidia-*-cu12 packages are kept — torch._C DT_NEEDED links libcufile,
+    # libnccl, and similar; removing any breaks `import torch`.
+    find nvidia -type f -name '*.a' -delete 2>/dev/null || true; \
+    rm -rf /app/.venv/share/jupyter 2>/dev/null || true; \
+    # Normalize mtimes so the cross-stage COPY of /app/.venv produces a
+    # byte-identical tar across bundles of the same platform.
+    find /app/.venv -exec touch -h -d @0 {} + 2>/dev/null || true
+
+# =============================================================================
+# Bundle dependency builder: bundle-specific deps
+# =============================================================================
+FROM base AS builder
+
+ARG BUNDLE
+
+RUN .venv/bin/python -m sie_server.cli resolve-deps \
+    --bundle "${BUNDLE}" \
+    --models-dir models \
+    > /tmp/bundle-requirements.txt \
+    && echo "Bundle ${BUNDLE} requirements:" \
+    && cat /tmp/bundle-requirements.txt
+
+# Bundle-specific deps go into a separate site-packages tree (``bundle-libs``,
+# prepended to sys.path via a .pth) so the shared venv layer stays
+# byte-identical across bundles. Branches resolve with ``.venv/bin/pip`` (shared
+# torch/transformers/nvidia wheels visible on the venv's sys.path); bundle-libs
+# carries each bundle's closure for any package whose version differs from the
+# shared venv. flash-attn deps carry `sys_platform == 'linux'` markers so they
+# install on Linux (this image) but not on developer machines.
+#
+# Per-bundle CUDA wheel index. SGLang's sgl-kernel/flashinfer wheels live on the
+# docs.sglang.ai cu129 index (not PyPI), so the SGLang-family bundles add it.
+# The sglang-cu130 bundle (sglang 0.5.13 / torch 2.11 / cu130, CUDA 13) is built by the
+# separate ``cuda13`` platform — see Dockerfile.cuda13 — not here.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/uv \
+    mkdir -p /app/bundle-libs; \
+    if [ -s /tmp/bundle-requirements.txt ]; then \
+        case "$BUNDLE" in \
+        sglang | sglang-embedding | sglang-vision-extract) \
+            .venv/bin/pip install \
+                --target=/app/bundle-libs \
+                --no-compile \
+                --extra-index-url https://docs.sglang.ai/whl/cu129/ \
+                -r /tmp/bundle-requirements.txt ;; \
+        *) \
+            .venv/bin/pip install \
+                --target=/app/bundle-libs \
+                --no-compile \
+                -r /tmp/bundle-requirements.txt ;; \
+        esac; \
+    fi
+
+# bundle-libs cleanup (symmetric to the .venv cleanup in base). The .venv
+# tree is already final in the base stage; only the per-bundle tree needs
+# cleanup here. Preserve dist-info RECORD files for runtime native-library
+# discovery.
+RUN set -eux; \
+    if [ -d /app/bundle-libs ]; then \
+        cd /app/bundle-libs; \
+        find . -type d -name '__pycache__' -prune -exec rm -rf {} +; \
+        find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete; \
+        find . -type d -name 'tests' -prune -exec rm -rf {} +; \
+        rm -rf torch/test torch/utils/tensorboard torch/utils/bottleneck 2>/dev/null || true; \
+        find torch -type f -name '*.a' -delete 2>/dev/null || true; \
+        find nvidia -type f -name '*.a' -delete 2>/dev/null || true; \
+    fi; \
+    # Normalize mtimes so rebuilds of the same bundle produce identical layer bytes.
+    find /app/bundle-libs -exec touch -h -d @0 {} + 2>/dev/null || true
+
+# =============================================================================
+# Runtime image
+# =============================================================================
+# Runtime base selection is bundle-scoped. Most CUDA bundles stay on the
+# smaller CUDA base runtime; SGLang-family bundles need the devel toolkit
+# because flashinfer/tvm_ffi perform runtime JIT through nvcc on first decode.
+FROM nvidia/cuda:12.4.1-base-ubuntu22.04 AS runtime-default
+FROM nvidia/cuda:12.4.1-base-ubuntu22.04 AS runtime-transformers5
+FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04 AS runtime-sglang
+ENV CUDA_HOME=/usr/local/cuda \
+    LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+FROM runtime-sglang AS runtime-sglang-embedding
+FROM runtime-sglang AS runtime-sglang-vision-extract
+# NOTE: the sglang-cu130 bundle (CUDA 13 / sglang 0.5.13 / torch 2.11 cu130) is built by
+# the separate ``cuda13`` platform — packages/sie_server/Dockerfile.cuda13 — so
+# this CUDA-12 image never produces a (mislabelled) CUDA-13 ``cuda12-sglang-cu130``
+# image. See #1415.
+
+FROM runtime-${BUNDLE} AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# gcc + libc6-dev: triton JIT compiles CUDA kernels at first use.
+# libnuma1: required by sgl_kernel (SGLang bundle); import fails with a
+#   misleading SM-arch error without it.
+# libgomp1: torch OpenMP runtime.
+# libspatialindex-c6: rtree (docling dep) dlopens libspatialindex_c.so; the
+#   rtree==1.4.1 wheel only bundles the C++ core, not the C wrapper.
+# libgl1 libglib2.0-0 libice6 libsm6 libx11-6 libxcb1 libxext6: docling-ibm-models'
+#   TableFormer imports cv2 during DoclingAdapter.load() pre-warm; the
+#   opencv-python wheel unconditionally dlopens an X11 + libGL + glib chain at
+#   import even in headless usage. Without these, every docling extract crashes
+#   with "ImportError: libxcb.so.1: cannot open shared object file" (issue #1028).
+# ninja-build: flashinfer invokes ninja during first-use SGLang kernel JIT.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    gcc \
+    libc6-dev \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    libice6 \
+    libnuma1 \
+    libsm6 \
+    libspatialindex-c6 \
+    ninja-build \
+    libx11-6 \
+    libxcb1 \
+    libxext6
+
+RUN groupadd -g 1000 sie && useradd -u 1000 -g sie -m sie
+
+WORKDIR /app
+
+# Standalone Python 3.12 tree + symlinks (no deadsnakes). Pulled from `base`
+# since /opt/python is established in the deps stage and never touched later.
+COPY --link --from=base /opt/python /opt/python
+RUN set -e; \
+    py=$(ls -d /opt/python/cpython-3.12*/bin/python3.12 | head -1); \
+    [ -x "$py" ] || { echo "no standalone python found under /opt/python"; exit 1; }; \
+    ln -sf "$py" /usr/local/bin/python3.12; \
+    ln -sf /usr/local/bin/python3.12 /usr/local/bin/python3; \
+    ln -sf /usr/local/bin/python3.12 /usr/local/bin/python
+
+# Shared content — identical across bundles of the same platform. Pulled from
+# `base` so every bundle rebuild hits BuildKit's local cache and the resulting
+# registry layers are content-addressed identically, enabling pull-time dedup.
+# Ordered BEFORE the per-bundle COPY so bundle-libs is the only invalidating
+# layer when only BUNDLE changes.
+# --link on shared COPYs: produces an independent layer tar without parent-dir
+# headers carrying a build-time mtime, so the resulting layer digests match
+# across bundles of the same platform and the registry can dedup them.
+# --chown uses numeric IDs because --link doesn't have /etc/passwd visible
+# (the sie user is added in the runtime stage filesystem but --link layers
+# are created in isolation from the destination stage state).
+COPY --link --from=base --chown=1000:1000 /app/.venv /app/.venv
+# Source trees are copied WITHOUT --link. ``COPY --link --from=<stage>``
+# layers are cached on a digest that, in the buildx versions this image
+# was built with, did not reliably invalidate when the upstream source
+# changed — the stale-code bug above. These trees are small, so dropping
+# --link costs negligible dedup while guaranteeing edited code ships.
+COPY --from=base --chown=1000:1000 /app/src /app/src
+COPY --from=base --chown=1000:1000 /tmp/sie_sdk/src /tmp/sie_sdk/src
+COPY --link --from=base --chown=1000:1000 /app/models /app/models
+COPY --link --from=base --chown=1000:1000 /app/bundles /app/bundles
+# Bundle-specific extras — last layer so shared layers above stay cached.
+# A `.pth` file in the shared venv puts /app/bundle-libs at sys.path[0] at startup.
+COPY --link --from=builder --chown=1000:1000 /app/bundle-libs /app/bundle-libs
+
+RUN mkdir -p /app/evals /app/.cache/huggingface /app/.cache/sie-kernels \
+    && chown -R sie:sie /app/evals /app/.cache
+
+# Declare the BUNDLE arg only here, where it is first used (LABEL + ENV),
+# so every RUN/COPY layer above is bundle-agnostic in its cache key and the
+# resulting layers are content-addressed identically across bundles.
+ARG BUNDLE
+
+LABEL org.opencontainers.image.title="SIE Server" \
+      org.opencontainers.image.description="Search Inference Engine - ${BUNDLE} bundle" \
+      sie.bundle="${BUNDLE}"
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/app/.cache/huggingface \
+    SIE_SGLANG_KERNEL_CACHE_ROOT=/app/.cache/sie-kernels \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    SIE_BUNDLE="${BUNDLE}"
+
+USER sie
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" || exit 1
+
+ENTRYPOINT ["python", "-m", "sie_server.cli"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8080", "--models-dir", "/app/models"]

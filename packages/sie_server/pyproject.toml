@@ -1,0 +1,151 @@
+[project]
+name = "sie-server"
+version = "0.7.2"
+description = "Search Inference Engine - GPU inference server for search workloads"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    # SDK for shared types, storage, and cache utilities
+    "sie-sdk[storage]>=0.1",
+    # Web framework
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.32,<1",
+    # Serialization
+    "msgpack>=1.2.1,<2",
+    "msgpack-numpy>=0.4,<1",
+    "orjson>=3.10,<4",
+    # ML / Inference
+    # torch 2.9.x required - flash-attn prebuilt wheels are version-specific
+    "torch>=2.9,<2.10",
+    # Bundle-controlled: each bundle overlays its exact transformers into
+    # bundle-libs (bundles/default.yaml >=4.57,<5; transformers5.yaml / gemma via
+    # sglang >=5). The base range is bounded <6 so the >=5 overlays resolve while
+    # the base venv can't silently jump to a transformers 6 major.
+    "transformers>=4.57,<6",
+    "tokenizers>=0.20,<1",
+    "sentence-transformers>=5.0,<6",
+    "safetensors>=0.4,<1",
+    # Artifact resolution (snapshot_download / hf_hub_download / scan_cache_dir)
+    # is imported directly by the adapters and the disk cache, and `requests` by
+    # the sglang and mlx sidecar clients. Both are mirrored in
+    # bundles/default.yaml `deps` and both previously reached the image only as
+    # somebody else's transitive requirement, which a lock that resolves the
+    # whole workspace cannot distinguish from a first-class one (#2873).
+    "huggingface-hub>=0.26,<2",
+    "requests>=2.32,<3",
+    "FlagEmbedding>=1.3,<2",
+    # LoRA runtime (adapters/peft_lora_mixin: PeftModel wrap + hot-swap).
+    # Load-bearing for BYO-LoRA; previously only a transitive pin.
+    "peft>=0.19,<1",
+    "einops>=0.8,<1", # Tensor ops (required by NV-Embed-v2 trust_remote_code)
+    # GLiNER / GLiNER2 / GLiREL / GLiClass extraction adapters.
+    # Keep every range here in step with the matching key in
+    # bundles/default.yaml `deps`. That mapping is a mirror, not an install
+    # authority: only what this distribution declares reaches a resolved lock
+    # and therefore a built image. gliner2 lived in the bundle alone and so
+    # never shipped, killing three extract cells at model load (#2873).
+    "gliner>=0.2,<1",
+    "gliner2>=1.3.1,<2",
+    "glirel>=1.0,<2",
+    "gliclass>=0.1,<1",
+    # Docling, composite-document parser (PDF/DOCX/HTML) for extract().
+    # PINNED TO THE ARTIFACT REVISION, NOT FLOATED (#2872). Docling resolves
+    # its RapidOCR det/cls/rec files by a version-specific path table, so the
+    # library version and the immutable artifact revision pinned in
+    # models/docling.yaml (superlinked/docling-artifacts @ 310479be, which
+    # republishes the Docling 2.99 inference artifacts with BOTH the English
+    # and Chinese RapidOCR sets, #2919) are ONE compatibility pair.
+    # A floating '>=2,<3' let the Linux resolution drift to 2.116, whose table
+    # asks for PP-OCRv6 while the committed artifacts ship PP-OCRv4 only —
+    # docling then failed to load on BOTH profiles. Moving this range requires
+    # re-curating and re-pinning the artifact revision in the same change.
+    "docling>=2.99,<2.100",
+    # Pin opencv-python-headless in place of opencv-python (pulled in via
+    # docling -> rapidocr). The GUI build dlopens libxcb.so.1 / libGL.so.1
+    # which aren't present in the worker images; the headless wheel ships the
+    # same cv2 Python API without X11/GUI runtime deps. The transitive
+    # opencv-python request is suppressed via [tool.uv] override-dependencies
+    # in the root pyproject.toml.
+    "opencv-python-headless>=4,<5",
+    "loguru>=0.7,<1",
+    # SigLIP (Marqo/marqo-ecommerce-embeddings-B native open_clip loader)
+    "open-clip-torch>=2.24",
+    # Image processing
+    "pillow>=12.2.0",
+    "numpy>=2,<3",
+    "torchvision>=0.18,<1", # Required by some HF models (e.g., nvidia/llama-nemoretriever)
+    # Config
+    "pyyaml>=6,<7",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6,<3",
+    # Dependency checking
+    "packaging>=24,<25",
+    # Hot-reload
+    "watchdog>=6,<7",
+    # Observability
+    "opentelemetry-api>=1.28,<2",
+    "opentelemetry-sdk>=1.28,<2",
+    "opentelemetry-instrumentation-fastapi>=0.49b0,<1",
+    "opentelemetry-exporter-otlp>=1.28,<2",
+    # CLI / TUI
+    "typer>=0.14,<1",
+    "rich>=13,<14",
+    "uvloop>=0.22",
+    "timm>=0.9.0,<1.0",
+    "msgspec>=0.20.0",
+    # Async HTTP client (telemetry sender)
+    "httpx>=0.28.1",
+    # BLAKE3 used to cross-check the worker-sidecar's `PreparedTokens`
+    # tokenizer_id. Tiny (<200KB, pure-Rust via PyO3), mandatory for
+    # the encode / score fast-path consumer — see
+    # `sie_server.core.preprocessor.text.TextPreprocessor`.
+    "blake3>=0.4,<1",
+    "python-multipart>=0.0.20,<1",
+]
+
+[project.optional-dependencies]
+# flash-attn for optimized attention (prebuilt wheel from mjun0812 for torch 2.9)
+flash-attn = ["flash-attn>=2.7,<3 ; sys_platform == 'linux'"]
+# xformers for memory-efficient attention (required by Stella models)
+xformers = ["xformers>=0.0.30,<0.1 ; sys_platform == 'linux'"]
+gpu-metrics = ["nvidia-ml-py>=13.5,<14"]
+# TUI dependencies
+top = ["textual>=3.0,<4"]
+# Local embeddings + reranking on Apple Silicon / CPU (no Docker/mise). The torch /
+# sentence-transformers / FlagEmbedding stack is already in the base deps; the base
+# leaves transformers at >=4.57,<6 so the transformers-5 bundle overlays resolve.
+# This extra tightens it to <5 — the version the embed/rerank adapters need — for a
+# bare install with no bundle overlay:
+#   uv tool install "sie-server[local]" && sie-server serve
+#
+# Generation is deliberately NOT a locked extra. mlx-lm requires transformers>=5; as
+# a workspace extra it would drag the base resolution toward 5.x (which breaks
+# embed/rerank on a bare install). Instead overlay it per-invocation, mirroring the
+# bundle's `uv run --with-requirements` — keeps generation deps out of the base lock:
+#   uvx --with "mlx-lm>=0.30.7" --from sie-server sie-server serve -b sglang -p 8081
+# (Linux/CUDA generation uses the Docker image: SGLang pins timm==1.0.16, which
+# conflicts with the embed/rerank stack's timm<1.0, so it can't share a pip env.)
+local = ["transformers>=4.57,<5"]
+
+[project.scripts]
+sie-server = "sie_server.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sie_server"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"models" = "sie_server/models"
+"bundles" = "sie_server/bundles"
+
+[tool.uv.sources]
+# Prebuilt flash-attn wheel for torch 2.9 + cu129 (official wheels only go up to torch 2.8).
+# Platform-specific: Linux x86_64 only. Non-Linux users should not install the flash-attn extra.
+# Source: mjun0812/flash-attention-prebuild-wheels v0.7.11 (first release with cu129torch2.9 cp312 manylinux).
+flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.11/flash_attn-2.7.4+cu129torch2.9-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux'" }
+
+[dependency-groups]
+dev = []

@@ -1,0 +1,32 @@
+sie_id: Qwen/Qwen3-Embedding-0.6B
+hf_id: Qwen/Qwen3-Embedding-0.6B
+hf_revision: 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode:
+    dense:
+      dim: 1024
+    sparse: null
+    multivector: null
+  score: null
+  extract: null
+max_sequence_length: 32768
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.qwen2_flash:Qwen2FlashAdapter
+    adapter_options:
+      loadtime:
+        causal: true
+      runtime:
+        pooling: last
+        normalize: true
+        query_template: |-
+          Instruct: {instruction}
+          Query:{text}
+        default_instruction: Given a web search query, retrieve relevant passages that answer the query

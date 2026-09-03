@@ -1,0 +1,42 @@
+{
+  "model": "Qwen/Qwen3-Reranker-4B",
+  "scores": [
+    {
+      "item_id": "chunk-1",
+      "score": 0.97265625,
+      "rank": 0
+    },
+    {
+      "item_id": "chunk-0",
+      "score": 0.96484375,
+      "rank": 1
+    },
+    {
+      "item_id": "chunk-3",
+      "score": 0.9609375,
+      "rank": 2
+    },
+    {
+      "item_id": "chunk-2",
+      "score": 0.65234375,
+      "rank": 3
+    }
+  ],
+  "usage": {
+    "input_tokens": 1261,
+    "credits_charged": 25,
+    "rate_book_version": "2026-07-26-production-bootstrap-v2"
+  },
+  "request": {
+    "id": "019fe896-873e-7e43-83e8-6e9088d8f3c2",
+    "credits_debited": 25,
+    "rate_book_version": "2026-07-26-production-bootstrap-v2",
+    "usage": {
+      "input_tokens": 1261,
+      "pairs": 4,
+      "credits_charged": 25,
+      "rate_book_version": "2026-07-26-production-bootstrap-v2"
+    },
+    "execution_identity_sha256": "a61058c96cb7d88459f63949845a8b35aa0b258042898d6159adf80eff846963"
+  }
+}

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#MISE description="Run tests"
+#USAGE flag "-c --coverage" help="Run with coverage report"
+#USAGE flag "-i --integration" help="Run integration tests (requires running server)"
+#USAGE flag "-d --docker" help="Run Docker integration tests (slow, builds Docker image)"
+#USAGE flag "-l --collect-only" help="Only collect and list test names, don't run them"
+#USAGE flag "-k --filter <filter>" help="Filter tests by name expression (passed to pytest -k)"
+#USAGE flag "-m --model <model>" help="Run model tests for a model ID (e.g. BAAI/bge-m3) or 'all' for all models"
+#USAGE arg "<path>" help="Optional path to test" default=""
+
+set -euo pipefail
+
+ARGS=()
+
+if [[ "${usage_collect_only:-}" == "true" ]]; then
+    ARGS+=("--collect-only" "-q")
+fi
+
+if [[ "${usage_coverage:-}" == "true" ]]; then
+    # Bare --cov defers to .coveragerc [run] source_pkgs so never-imported
+    # modules stay in the denominator (a --cov=<dir> scan misses src layouts).
+    ARGS+=("--cov" "--cov-report=term-missing" "--cov-report=xml")
+fi
+
+if [[ -n "${usage_filter:-}" ]]; then
+    ARGS+=("-k" "${usage_filter}")
+fi
+
+if [[ "${usage_docker:-}" == "true" ]]; then
+    ARGS+=("-m" "docker" "-s" "-o" "log_cli=true" "-o" "log_cli_level=INFO")
+elif [[ "${usage_integration:-}" == "true" ]]; then
+    ARGS+=("-m" "integration" "-s" "-o" "log_cli=true" "-o" "log_cli_level=INFO")
+fi
+
+if [[ -n "${usage_path:-}" ]]; then
+    ARGS+=("${usage_path}")
+fi
+
+if [[ -n "${usage_model:-}" && -n "${usage_path:-}" ]]; then
+    echo "ERROR: --model selects the server model suite and cannot be combined with an explicit test path." >&2
+    exit 1
+fi
+
+echo "## Checking public workspace lock"
+mise exec -- uv lock --check --project .
+
+# A root-project sync installs only the root project. Tests import every public
+# workspace member, so fresh environments must request them explicitly instead
+# of relying on packages left in an existing environment.
+echo "## Syncing public workspace"
+mise exec -- uv sync --frozen --project . --all-packages --no-install-package sie-audio-prep
+
+if [[ -n "${usage_model:-}" ]]; then
+    ARGS+=("packages/sie_server/tests/test_all_models.py" "-m" "model")
+    if [[ "${usage_model}" != "all" ]]; then
+        sanitized=$(echo "${usage_model}" | sed 's/[^a-zA-Z0-9]/_/g' | tr '[:upper:]' '[:lower:]')
+        # Test names may not include the full model ID; trim from right until matches exist.
+        all_tests=$(mise exec -- uv run --frozen --project . --no-sync pytest -c pyproject.toml \
+            packages/sie_server/tests/test_all_models.py -m model --collect-only -q 2>/dev/null || true)
+        while [[ -n "$sanitized" ]]; do
+            if echo "$all_tests" | grep -qi "$sanitized"; then
+                break
+            fi
+            sanitized="${sanitized%_*}"
+        done
+        if [[ -n "$sanitized" ]]; then
+            ARGS+=("-k" "${sanitized}")
+        else
+            echo "WARNING: no tests found matching model '${usage_model}'" >&2
+        fi
+    fi
+fi
+
+echo "## Running public workspace tests"
+if [[ ${#ARGS[@]} -eq 0 ]]; then
+    mise exec -- uv run --frozen --project . --no-sync pytest -c pyproject.toml
+else
+    mise exec -- uv run --frozen --project . --no-sync pytest -c pyproject.toml "${ARGS[@]}"
+fi

@@ -1,0 +1,362 @@
+"""GLiNER adapter for zero-shot NER extraction.
+
+GLiNER (Generalized NER) models perform named entity recognition on arbitrary
+entity types without fine-tuning. Given text and a list of entity labels,
+they extract spans matching those labels.
+
+Also supports NuNER models (token-based) with merge_adjacent_entities option.
+
+Reference models:
+- urchade/gliner_multi-v2.1 (multilingual, recommended)
+- urchade/gliner_large-v2.1 (English, larger)
+- urchade/gliner_small-v2.1 (English, smaller/faster)
+- numind/NuNER_Zero (token-based, requires merge_adjacent_entities=True)
+- numind/NuNER_Zero-span (span-based, works without merging)
+"""
+
+from pathlib import Path
+from typing import Any, ClassVar
+
+import torch
+
+from sie_server.adapters._base_adapter import BaseAdapter
+from sie_server.adapters._spec import AdapterSpec
+from sie_server.adapters._types import ERR_REQUIRES_TEXT, ComputePrecision
+from sie_server.core.inference_output import ExtractOutput
+from sie_server.types.inputs import Item
+from sie_server.types.responses import Entity
+
+# Error messages
+_ERR_REQUIRES_LABELS = "GLiNER requires labels parameter for extraction"
+_ERR_REQUIRES_NON_BLANK_TEXT = "GLiNER requires non-blank text for extraction"
+_ERR_PROMPT_EXHAUSTS_DOCUMENT = "GLiNER label prompt leaves no document tokens for extraction"
+
+
+class GLiNERAdapter(BaseAdapter):
+    """Adapter for GLiNER zero-shot NER models.
+
+    GLiNER extracts entities of any specified type from text without
+    model fine-tuning. You provide entity labels (e.g., ["person", "organization"])
+    and the model returns matching spans with confidence scores.
+
+    Example usage:
+        adapter = GLiNERAdapter("urchade/gliner_multi-v2.1")
+        adapter.load("cuda:0")
+        results = adapter.extract(
+            [Item(text="Apple Inc. was founded by Steve Jobs.")],
+            labels=["person", "organization"],
+        )
+        # Returns: [{"entities": [
+        #   {"text": "Apple Inc.", "label": "organization", "score": 0.95, "start": 0, "end": 10},
+        #   {"text": "Steve Jobs", "label": "person", "score": 0.92, "start": 26, "end": 36},
+        # ]}]
+    """
+
+    spec: ClassVar[AdapterSpec] = AdapterSpec(
+        inputs=("text",),
+        outputs=("json",),
+        unload_fields=("_model",),
+    )
+
+    def __init__(
+        self,
+        model_name_or_path: str | Path,
+        *,
+        threshold: float = 0.5,
+        flat_ner: bool = True,
+        multi_label: bool = False,
+        merge_adjacent_entities: bool = False,
+        compute_precision: ComputePrecision = "float16",
+        revision: str | None = None,
+        **kwargs: Any,  # Accept extra args from loader (e.g., pooling)
+    ) -> None:
+        """Initialize the adapter.
+
+        Args:
+            model_name_or_path: HuggingFace model ID or local path to GLiNER model.
+            threshold: Minimum confidence score for entity extraction (0-1).
+            flat_ner: If True, enforce non-overlapping entities (recommended).
+            multi_label: If True, allow same span to have multiple labels.
+            merge_adjacent_entities: If True, merge adjacent entities with same label.
+                Required for token-based models like numind/NuNER_Zero.
+            compute_precision: Compute precision for inference.
+            revision: Optional HuggingFace revision/branch/commit SHA to pin when
+                loading model artifacts.
+            **kwargs: Additional arguments (ignored, for compatibility).
+        """
+        _ = kwargs  # Unused, but accepted for loader compatibility
+        self._model_name_or_path = str(model_name_or_path)
+        self._threshold = threshold
+        self._flat_ner = flat_ner
+        self._multi_label = multi_label
+        self._merge_adjacent_entities = merge_adjacent_entities
+        self._compute_precision = compute_precision
+        self._revision = revision
+
+        self._model: Any = None  # GLiNER model type
+        self._device: str | None = None
+
+    def load(self, device: str) -> None:
+        """Load the model onto the specified device.
+
+        Args:
+            device: Device string (e.g., "cuda:0", "cpu", "mps").
+        """
+        # Import here to avoid dependency issues if gliner isn't installed
+        from gliner import GLiNER  # ty:ignore[unresolved-import]
+
+        self._device = device
+
+        # Determine torch dtype from precision
+        dtype = torch.float32
+        if device != "cpu":
+            if self._compute_precision == "float16":
+                dtype = torch.float16
+            elif self._compute_precision == "bfloat16":
+                dtype = torch.bfloat16
+
+        # Load model
+        load_kwargs: dict[str, Any] = {}
+        if self._revision is not None:
+            load_kwargs["revision"] = self._revision
+        self._model = GLiNER.from_pretrained(
+            self._model_name_or_path,
+            **load_kwargs,
+        )
+
+        # Move to device with precision
+        if device == "cpu":
+            self._model = self._model.to(device)
+        else:
+            self._model = self._model.to(device, dtype=dtype)
+
+    def extract(
+        self,
+        items: list[Item],
+        *,
+        labels: list[str] | None = None,
+        output_schema: dict[str, Any] | None = None,
+        instruction: str | None = None,
+        options: dict[str, Any] | None = None,
+        prepared_items: list[Any] | None = None,
+    ) -> ExtractOutput:
+        """Extract entities from items.
+
+        Args:
+            items: List of items to extract from (must have text).
+            labels: Entity types to extract (e.g., ["person", "organization"]).
+                   Required for GLiNER models.
+            output_schema: Unused for GLiNER (included for interface compatibility).
+            instruction: Unused for GLiNER (included for interface compatibility).
+            options: Adapter options to override model config defaults.
+                    Supported: threshold (float), flat_ner (bool), multi_label (bool),
+                    merge_adjacent_entities (bool).
+
+        Returns:
+            List of dicts, one per item, each containing:
+                - "entities": List of extracted entities, each with:
+                    - "text": The extracted text span
+                    - "label": Entity type label
+                    - "score": Confidence score (0-1)
+                    - "start": Start character offset
+                    - "end": End character offset
+                - "data": Empty dict (GLiNER doesn't produce structured data)
+
+        Raises:
+            RuntimeError: If model not loaded.
+            ValueError: If labels not provided or items lack text.
+        """
+        self._check_loaded()
+
+        if not labels:
+            raise ValueError(_ERR_REQUIRES_LABELS)
+
+        # Extract texts from all items
+        texts = [self._extract_text(item) for item in items]
+        if any(not text.strip() for text in texts):
+            raise ValueError(_ERR_REQUIRES_NON_BLANK_TEXT)
+
+        # Meter the exact post-word-truncation document window before GPU work.
+        # Besides producing the authoritative terminal counts, this rejects a
+        # finite-tokenizer prompt that leaves no represented document subword.
+        input_token_counts = self._doc_input_token_counts(texts, labels)
+
+        # Get options with fallback to model defaults
+        opts = options or {}
+        effective_threshold = opts.get("threshold", self._threshold)
+        effective_flat_ner = opts.get("flat_ner", self._flat_ner)
+        effective_multi_label = opts.get("multi_label", self._multi_label)
+        merge_adjacent = opts.get("merge_adjacent_entities", self._merge_adjacent_entities)
+
+        # Use batch prediction for efficiency (24x speedup vs single item loop)
+        with torch.inference_mode():
+            batch_entities = self._model.inference(
+                texts,
+                labels,
+                threshold=effective_threshold,
+                flat_ner=effective_flat_ner,
+                multi_label=effective_multi_label,
+            )
+
+        # Convert to our format
+        all_entities = []
+        for text, entities in zip(texts, batch_entities):
+            entity_results = []
+            for entity in entities:
+                entity_results.append(
+                    Entity(
+                        text=entity["text"],
+                        label=entity["label"],
+                        score=float(entity["score"]),
+                        start=entity["start"],
+                        end=entity["end"],
+                    )
+                )
+
+            # Merge adjacent entities if enabled (for token-based models like NuNER)
+            if merge_adjacent:
+                entity_results = self._merge_entities(entity_results, text)
+
+            all_entities.append(entity_results)
+
+        return ExtractOutput(entities=all_entities, input_token_counts=input_token_counts)
+
+    def _doc_input_token_counts(self, texts: list[str], labels: list[str]) -> list[int] | None:
+        """Count the document subwords represented by GLiNER's real processor.
+
+        Classic GLiNER first splits and truncates each document in WORDS, then
+        prepends the label prompt and transformer-tokenizes that retained word
+        window. Tokenizing the original string separately therefore counts
+        discarded tail text and is not an authoritative execution meter.
+
+        Delegate splitting, processor-specific truncation, label mapping, and
+        prompt construction to the pinned GLiNER processor. ``word_ids`` then
+        identifies every represented document subword while excluding prompt
+        words. Attention masking excludes padding; tokenizer specials remain
+        billable, matching the existing document-token contract. Batches match
+        GLiNER inference's default batch size so a finite tokenizer cap is
+        observed identically.
+        """
+        processor = getattr(self._model, "data_processor", None)
+        prepare_inputs = getattr(self._model, "prepare_inputs", None)
+        prepare_base_input = getattr(self._model, "prepare_base_input", None)
+        if processor is None or prepare_inputs is None or prepare_base_input is None:
+            return None
+
+        try:
+            split_texts, _, _ = prepare_inputs(texts)
+            raw_items = prepare_base_input(split_texts)
+            counts: list[int] = []
+            has_document_subwords: list[bool] = []
+            for start in range(0, len(raw_items), 8):
+                raw_batch = processor.collate_raw_batch(
+                    raw_items[start : start + 8],
+                    entity_types=labels,
+                )
+                retained_words = raw_batch["tokens"]
+                entity_mappings = raw_batch["classes_to_id"]
+                encoded = processor.tokenize_inputs(retained_words, entity_mappings)
+                for batch_index in range(len(retained_words)):
+                    word_ids = encoded.word_ids(batch_index)
+                    attention_mask = encoded["attention_mask"][batch_index].tolist()
+                    words_mask = encoded["words_mask"][batch_index].tolist()
+                    if len(word_ids) != len(attention_mask) or len(word_ids) != len(words_mask):
+                        return None
+                    first_document_index = next(
+                        (index for index, word_mask in enumerate(words_mask) if word_mask > 0),
+                        None,
+                    )
+                    first_document_word_id = (
+                        word_ids[first_document_index] if first_document_index is not None else None
+                    )
+                    represented_document = [
+                        bool(
+                            attended
+                            and first_document_word_id is not None
+                            and word_id is not None
+                            and word_id >= first_document_word_id
+                        )
+                        for attended, word_id in zip(attention_mask, word_ids)
+                    ]
+                    has_document_subwords.append(any(represented_document))
+                    counts.append(
+                        sum(
+                            bool(attended)
+                            and (
+                                word_id is None
+                                or (first_document_word_id is not None and word_id >= first_document_word_id)
+                            )
+                            for attended, word_id in zip(attention_mask, word_ids)
+                        )
+                    )
+        except Exception:  # noqa: BLE001 — metering must never fail an extraction
+            return None
+        if len(counts) != len(texts) or len(has_document_subwords) != len(texts):
+            return None
+        if not all(has_document_subwords):
+            raise ValueError(_ERR_PROMPT_EXHAUSTS_DOCUMENT)
+        return counts
+
+    def _merge_entities(self, entities: list[Entity], text: str) -> list[Entity]:
+        """Merge adjacent entities with the same label.
+
+        Token-based models like NuNER_Zero output per-token predictions that need
+        to be merged into contiguous spans. For example:
+            [Entity(text="Steve", label="person"), Entity(text="Jobs", label="person")]
+        becomes:
+            [Entity(text="Steve Jobs", label="person")]
+
+        Args:
+            entities: List of Entity objects (TypedDict, i.e. dict).
+            text: Original text (needed to extract merged spans).
+
+        Returns:
+            List of merged entities.
+        """
+        if not entities:
+            return []
+
+        # Sort by start position to ensure correct merging order
+        # Entity is a TypedDict (dict), so use dict access
+        sorted_entities = sorted(entities, key=lambda e: e.get("start") or 0)
+
+        merged = []
+        current = sorted_entities[0]
+
+        for next_entity in sorted_entities[1:]:
+            # Check if adjacent (touching or 1 char gap) and same label
+            is_adjacent = (next_entity.get("start") or 0) <= (current.get("end") or 0) + 1
+            same_label = next_entity["label"] == current["label"]
+
+            if is_adjacent and same_label:
+                # Merge: extend current entity to include next
+                next_end = next_entity.get("end")
+                current_end = current.get("end")
+                if current_end is None:
+                    new_end = next_end
+                elif next_end is None:
+                    new_end = current_end
+                else:
+                    new_end = max(current_end, next_end)
+                new_start = current.get("start")
+                new_text = text[new_start:new_end] if new_start is not None and new_end is not None else current["text"]
+                new_score = max(current["score"], next_entity["score"])
+                current = Entity(
+                    text=new_text,
+                    label=current["label"],
+                    score=new_score,
+                    start=new_start,
+                    end=new_end,
+                )
+            else:
+                merged.append(current)
+                current = next_entity
+
+        merged.append(current)
+        return merged
+
+    def _extract_text(self, item: Item) -> str:
+        """Extract text from an item."""
+        if item.text is None:
+            raise ValueError(ERR_REQUIRES_TEXT.format(adapter_name="GLiNER adapter"))
+        return item.text

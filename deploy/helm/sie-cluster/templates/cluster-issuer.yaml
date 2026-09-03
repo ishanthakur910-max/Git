@@ -1,0 +1,25 @@
+{{- $tls := include "sie-cluster.ingressTlsConfig" . | fromYaml }}
+{{- $certManager := default (dict) $tls.certManager }}
+{{- if and $tls.enabled (eq (default "byo" $tls.mode) "cert-manager") $certManager.create }}
+{{- $issuerName := $certManager.name }}
+{{- if not $issuerName }}{{ $issuerName = printf "%s-letsencrypt-prod" (include "sie-cluster.fullname" .) }}{{ end }}
+apiVersion: cert-manager.io/v1
+kind: {{ $certManager.kind }}
+metadata:
+  name: {{ $issuerName }}
+  {{- if eq $certManager.kind "Issuer" }}
+  namespace: {{ include "sie-cluster.namespace" . }}
+  {{- end }}
+  labels:
+    {{- include "sie-cluster.labels" . | nindent 4 }}
+spec:
+  acme:
+    server: {{ $certManager.server | quote }}
+    email: {{ $certManager.email | quote }}
+    privateKeySecretRef:
+      name: {{ $certManager.privateKeySecretRef | quote }}
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: {{ default .Values.ingress.className $certManager.ingressClassName }}
+{{- end }}

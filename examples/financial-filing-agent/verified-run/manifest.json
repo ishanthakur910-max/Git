@@ -1,0 +1,194 @@
+{
+  "created_at": "2026-08-09T22:13:28.948785+00:00",
+  "endpoint": "https://api.superlinked.com",
+  "models": {
+    "parse": "docling",
+    "retrieve": "BAAI/bge-m3",
+    "rerank": "Qwen/Qwen3-Reranker-4B",
+    "entities": "urchade/gliner_multi-v2.1",
+    "extract": "fastino/gliner2-large-v1"
+  },
+  "fixture": {
+    "path": "fixtures/pathward-filing-packet.html",
+    "sha256": "6232258157eb1881e8c1bbd479958ae13ea63281a21569e20414683e7c23c3ea"
+  },
+  "rate_book_provenance": {
+    "version": "2026-07-26-production-bootstrap-v2",
+    "source_artifacts": [
+      "raw/entities-original-10q.json",
+      "raw/entities-restated-10ka-diluted.json",
+      "raw/entities-restated-10ka.json",
+      "raw/entities-status.json",
+      "raw/gliner2-original-10q.json",
+      "raw/gliner2-restated-10ka.json",
+      "raw/gliner2-status.json",
+      "raw/rerank.json",
+      "raw/retrieve.json"
+    ],
+    "request_ids": [
+      "019fe896-88dc-74a0-a305-233986e2b549",
+      "019fe896-8ab4-77e2-8d02-3a6e4d9d059d",
+      "019fe896-89cb-7a02-ba5f-d856555d6bf4",
+      "019fe896-8b94-71c0-a6a4-03ae93e964bd",
+      "019fe896-8c6d-7362-bcef-c8312102725e",
+      "019fe896-8d5b-71d1-a135-b6415955aa06",
+      "019fe896-8e42-7f13-88dd-56954f7e7151",
+      "019fe896-873e-7e43-83e8-6e9088d8f3c2",
+      "019fe896-836c-7780-8e74-06af44d1170c",
+      "019fe896-844d-72f1-9cd9-ecd83b0788fc",
+      "019fe896-8506-7c42-8445-b74c9ddef39e",
+      "019fe896-85c5-7391-b628-68114c894936",
+      "019fe896-8683-7320-918c-fad04527a3b0"
+    ],
+    "request_versions": {
+      "019fe896-88dc-74a0-a305-233986e2b549": "2026-07-26-production-bootstrap-v2",
+      "019fe896-8ab4-77e2-8d02-3a6e4d9d059d": "2026-07-26-production-bootstrap-v2",
+      "019fe896-89cb-7a02-ba5f-d856555d6bf4": "2026-07-26-production-bootstrap-v2",
+      "019fe896-8b94-71c0-a6a4-03ae93e964bd": "2026-07-26-production-bootstrap-v2",
+      "019fe896-8c6d-7362-bcef-c8312102725e": "2026-07-26-production-bootstrap-v2",
+      "019fe896-8d5b-71d1-a135-b6415955aa06": "2026-07-26-production-bootstrap-v2",
+      "019fe896-8e42-7f13-88dd-56954f7e7151": "2026-07-26-production-bootstrap-v2",
+      "019fe896-873e-7e43-83e8-6e9088d8f3c2": "2026-07-26-production-bootstrap-v2",
+      "019fe896-836c-7780-8e74-06af44d1170c": "2026-07-26-production-bootstrap-v2",
+      "019fe896-844d-72f1-9cd9-ecd83b0788fc": "2026-07-26-production-bootstrap-v2",
+      "019fe896-8506-7c42-8445-b74c9ddef39e": "2026-07-26-production-bootstrap-v2",
+      "019fe896-85c5-7391-b628-68114c894936": "2026-07-26-production-bootstrap-v2",
+      "019fe896-8683-7320-918c-fad04527a3b0": "2026-07-26-production-bootstrap-v2"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "parsed.md",
+      "sha256": "8b77782d26ad4316b1ebda9466057eb653759313c82cd97714cb86117d791601"
+    },
+    {
+      "path": "review.json",
+      "sha256": "f5c9c672f35a5e98a5f0ef54a4b42ef4c89c4b1777cc0723c833880a462c3a82"
+    },
+    {
+      "path": "raw/entities-original-10q.json",
+      "sha256": "e0ce25f72b8cc2a453d9b50254fa1cbeee0a7a35be2961bfe57b8fef2bf9ddd5"
+    },
+    {
+      "path": "raw/entities-restated-10ka-diluted.json",
+      "sha256": "302e085795527b7320cb928992858fb911b482d183cfdba0e5d8336daf122131"
+    },
+    {
+      "path": "raw/entities-restated-10ka.json",
+      "sha256": "3ff42af378fb0b7bf879d172b4bf52a6697dae0aca9baedb89f400e7c6615944"
+    },
+    {
+      "path": "raw/entities-status.json",
+      "sha256": "4037f534d5917169c9d54851007cbed3623e44c9ab045377fb51c51789ea05c0"
+    },
+    {
+      "path": "raw/entities.json",
+      "sha256": "574b5fd48ea6e9020a141a4546fbf80585a34a794e2a45fbba0e94c30ea8d5da"
+    },
+    {
+      "path": "raw/gliner2-original-10q.json",
+      "sha256": "cab53ef308405eff598bf7ed17d2067cec39c69a9286bcc93cd6b5c3c14c32f7"
+    },
+    {
+      "path": "raw/gliner2-restated-10ka.json",
+      "sha256": "4f9d9b4b64d974ddf084a92fc3007f4748d16b7fffc413f8270b45f00d200de7"
+    },
+    {
+      "path": "raw/gliner2-status.json",
+      "sha256": "8dd1fee03ef84b22ce36e1034e73231771431377fda2cdec77147160dce05001"
+    },
+    {
+      "path": "raw/mapped.json",
+      "sha256": "756f36efddf2dc875f60e0b5a9c7dd1eceb901234c9b5ba7493c2bd24028a6e9"
+    },
+    {
+      "path": "raw/parse.json",
+      "sha256": "11bdd451573f2e4ddeff7f830dd9875aa1d474460f27dbb4f66ded902e2aab4b"
+    },
+    {
+      "path": "raw/rerank-request.json",
+      "sha256": "c713fac1acc9bc0924adf29a12138c638ca3bb73b8c0e0502ba5fa924ca8dc74"
+    },
+    {
+      "path": "raw/rerank.json",
+      "sha256": "b8819dce4b869650591c998d6bd478b4775b662429e98eb437c7401c83e770da"
+    },
+    {
+      "path": "raw/retrieve.json",
+      "sha256": "a36dc583d13eb0136537b1dc67c2e3e007a2e6ffe79ba66852881068cfba17b9"
+    },
+    {
+      "path": "evaluation.json",
+      "sha256": "6d9a68a668af31b301a66f7d6a0c261e090c879a5ecec7eb55bfb7b3bea0bc26"
+    }
+  ],
+  "calls": [
+    {
+      "stage": "parse",
+      "model": "docling",
+      "configured_model": "docling",
+      "latency_ms": 416.6
+    },
+    {
+      "stage": "retrieve",
+      "model": "BAAI/bge-m3",
+      "latency_ms": 976.4
+    },
+    {
+      "stage": "rerank",
+      "model": "Qwen/Qwen3-Reranker-4B",
+      "latency_ms": 421.3
+    },
+    {
+      "stage": "entities_original_10q",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 240.1
+    },
+    {
+      "stage": "entities_restated_10ka",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 225.2
+    },
+    {
+      "stage": "entities_restated_10ka_diluted",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 226.7
+    },
+    {
+      "stage": "entities_status",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 215.0
+    },
+    {
+      "stage": "gliner2_original_10q",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 242.7
+    },
+    {
+      "stage": "gliner2_restated_10ka",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 231.3
+    },
+    {
+      "stage": "gliner2_status",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 242.7
+    }
+  ],
+  "pipeline": [
+    "parse",
+    "retrieve",
+    "rerank",
+    "entities_original_10q",
+    "entities_restated_10ka",
+    "entities_restated_10ka_diluted",
+    "entities_status",
+    "gliner2_original_10q",
+    "gliner2_restated_10ka",
+    "gliner2_status",
+    "source_specific_table_mapping",
+    "cross_filing_value_check",
+    "deterministic_validation"
+  ],
+  "decision_boundary": "The review fails closed unless GLiNER and GLiNER2 recover source spans from both filing tables, the original Form 10-Q values match the Form 10-K/A's previously reported column, and reranked evidence retains the filing-status span and Pathward's exact life-of-portfolio caveat."
+}

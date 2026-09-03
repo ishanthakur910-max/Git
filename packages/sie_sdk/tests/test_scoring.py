@@ -1,0 +1,235 @@
+"""Tests for SDK scoring module (maxsim / maxsim_batch utilities)."""
+
+import numpy as np
+import pytest
+from sie_sdk.scoring import maxsim, maxsim_batch
+
+# Create a random generator for tests
+_RNG = np.random.default_rng(42)
+
+
+class TestMaxSim:
+    """Tests for maxsim() function."""
+
+    def test_maxsim_basic(self) -> None:
+        """MaxSim returns correct number of scores."""
+        query = _RNG.standard_normal((5, 128)).astype(np.float32)  # 5 tokens
+        docs = [
+            _RNG.standard_normal((10, 128)).astype(np.float32),  # doc 1: 10 tokens
+            _RNG.standard_normal((8, 128)).astype(np.float32),  # doc 2: 8 tokens
+        ]
+
+        scores = maxsim(query, docs)
+
+        assert len(scores) == 2
+        assert all(isinstance(s, float) for s in scores)
+
+    def test_maxsim_single_document(self) -> None:
+        """MaxSim works with a single document as 2D array."""
+        query = _RNG.standard_normal((3, 64)).astype(np.float32)
+        doc = _RNG.standard_normal((5, 64)).astype(np.float32)
+
+        scores = maxsim(query, doc)
+
+        assert len(scores) == 1
+
+    def test_maxsim_identical_vectors(self) -> None:
+        """MaxSim of identical normalized vectors equals num_query_tokens."""
+        # Create normalized vectors
+        query = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        doc = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+
+        scores = maxsim(query, [doc])
+
+        # Each query token has max sim of 1.0 with matching doc token, so total is 2.0
+        assert abs(scores[0] - 2.0) < 1e-5
+
+    def test_maxsim_orthogonal_vectors(self) -> None:
+        """MaxSim of orthogonal vectors is lower."""
+        query = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+
+        # Doc 1: identical to query
+        doc1 = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+
+        # Doc 2: rotated 45 degrees
+        doc2 = np.array([[0.707, 0.707], [-0.707, 0.707]], dtype=np.float32)
+
+        scores = maxsim(query, [doc1, doc2])
+
+        # Doc 1 should have higher score (perfect match)
+        assert scores[0] > scores[1]
+
+    def test_maxsim_ranking_order(self) -> None:
+        """MaxSim correctly ranks documents by similarity."""
+        # Single-token query pointing in x direction
+        query = np.array([[1.0, 0.0]], dtype=np.float32)
+
+        # Docs with decreasing similarity to query
+        doc_high = np.array([[1.0, 0.0]], dtype=np.float32)  # perfect match
+        doc_mid = np.array([[0.707, 0.707]], dtype=np.float32)  # 45 degree
+        doc_low = np.array([[0.0, 1.0]], dtype=np.float32)  # orthogonal
+
+        scores = maxsim(query, [doc_high, doc_mid, doc_low])
+
+        assert scores[0] > scores[1] > scores[2]
+
+    def test_maxsim_with_variable_doc_lengths(self) -> None:
+        """MaxSim handles documents with different token counts."""
+        query = _RNG.standard_normal((4, 32)).astype(np.float32)
+        docs = [
+            _RNG.standard_normal((1, 32)).astype(np.float32),  # 1 token
+            _RNG.standard_normal((10, 32)).astype(np.float32),  # 10 tokens
+            _RNG.standard_normal((100, 32)).astype(np.float32),  # 100 tokens
+        ]
+
+        scores = maxsim(query, docs)
+
+        assert len(scores) == 3
+        # All scores should be finite
+        assert all(np.isfinite(s) for s in scores)
+
+    def test_float16_inputs_accumulate_in_float32(self) -> None:
+        """Float16 transport values use a float32 MaxSim accumulator."""
+        rng = np.random.default_rng(7)
+        query = rng.standard_normal((32, 128)).astype(np.float16)
+        doc = rng.standard_normal((96, 128)).astype(np.float16)
+        expected = maxsim(query.astype(np.float32), doc.astype(np.float32))
+
+        actual = maxsim(query, doc)
+
+        np.testing.assert_allclose(actual, expected, rtol=0, atol=0)
+
+
+class TestMaxSimBatch:
+    """Tests for maxsim_batch() function."""
+
+    def test_batch_shape(self) -> None:
+        """Batch maxsim returns correct shape."""
+        queries = [
+            _RNG.standard_normal((3, 64)).astype(np.float32),
+            _RNG.standard_normal((5, 64)).astype(np.float32),
+        ]
+        docs = [
+            _RNG.standard_normal((4, 64)).astype(np.float32),
+            _RNG.standard_normal((6, 64)).astype(np.float32),
+            _RNG.standard_normal((8, 64)).astype(np.float32),
+        ]
+
+        scores = maxsim_batch(queries, docs)
+
+        assert scores.shape == (2, 3)  # 2 queries x 3 docs
+
+    def test_batch_matches_individual(self) -> None:
+        """Batch results match individual maxsim calls."""
+        queries = [
+            _RNG.standard_normal((3, 32)).astype(np.float32),
+            _RNG.standard_normal((4, 32)).astype(np.float32),
+        ]
+        docs = [
+            _RNG.standard_normal((5, 32)).astype(np.float32),
+            _RNG.standard_normal((6, 32)).astype(np.float32),
+        ]
+
+        batch_scores = maxsim_batch(queries, docs)
+
+        # Compare with individual calls
+        for i, query in enumerate(queries):
+            individual_scores = maxsim(query, docs)
+            for j, score in enumerate(individual_scores):
+                assert abs(batch_scores[i, j] - score) < 1e-5
+
+    def test_float16_batch_matches_float32_oracle(self) -> None:
+        """Batch MaxSim preserves float32 accumulation for float16 inputs."""
+        rng = np.random.default_rng(11)
+        queries = [rng.standard_normal((tokens, 64)).astype(np.float16) for tokens in (8, 17)]
+        docs = [rng.standard_normal((tokens, 64)).astype(np.float16) for tokens in (13, 29, 51)]
+        expected = maxsim_batch(
+            [query.astype(np.float32) for query in queries],
+            [doc.astype(np.float32) for doc in docs],
+        )
+
+        actual = maxsim_batch(queries, docs)
+
+        np.testing.assert_allclose(actual, expected, rtol=0, atol=0)
+
+
+class TestMaxsimInputValidation:
+    """Common misuse must name the fault, not leak NumPy's gufunc signature.
+
+    Callers hold vectors they read back out of a vector database, so shape and
+    width faults are the expected failure mode. Before this, all three cases
+    below surfaced as raw NumPy errors quoting
+    ``gufunc signature (n?,k),(k,m?)->(n?,m?)`` — which never mentions query,
+    document, or which side was wrong.
+    """
+
+    def test_dim_mismatch_names_both_widths(self) -> None:
+        query = np.zeros((3, 128), dtype=np.float32)
+        doc = np.zeros((4, 64), dtype=np.float32)
+
+        with pytest.raises(ValueError, match=r"dim mismatch: query has dim 128 but documents\[0\] has dim 64"):
+            maxsim(query, [doc])
+
+    def test_empty_document_is_rejected_with_its_shape(self) -> None:
+        query = np.zeros((3, 128), dtype=np.float32)
+        empty = np.zeros((0, 128), dtype=np.float32)
+
+        with pytest.raises(ValueError, match=r"documents\[0\] has 0 tokens"):
+            maxsim(query, [empty])
+
+    def test_empty_query_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"query has 0 tokens"):
+            maxsim(np.zeros((0, 128), dtype=np.float32), [np.zeros((2, 128), dtype=np.float32)])
+
+    def test_single_vector_passed_unwrapped_explains_the_fix(self) -> None:
+        """A 1-D array is the classic slip; the message must say how to fix it."""
+        query = np.zeros((3, 128), dtype=np.float32)
+
+        with pytest.raises(ValueError, match=r"must be a 2-D array"):
+            maxsim(query, np.zeros(128, dtype=np.float32))
+
+    def test_1d_query_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"query must be a 2-D array"):
+            maxsim(np.zeros(128, dtype=np.float32), [np.zeros((2, 128), dtype=np.float32)])
+
+    def test_the_offending_document_is_identified_by_index(self) -> None:
+        query = np.zeros((2, 8), dtype=np.float32)
+        docs = [np.zeros((3, 8), dtype=np.float32), np.zeros((3, 4), dtype=np.float32)]
+
+        with pytest.raises(ValueError, match=r"documents\[1\] has dim 4"):
+            maxsim(query, docs)
+
+    def test_empty_document_list_still_returns_no_scores(self) -> None:
+        """Zero documents is a legitimate empty result, not an error."""
+        assert maxsim(np.zeros((2, 8), dtype=np.float32), []) == []
+
+    def test_valid_input_is_unaffected(self) -> None:
+        query = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        doc1 = np.array([[1.0, 0.0], [0.5, 0.5]], dtype=np.float32)
+        doc2 = np.array([[0.0, 1.0]], dtype=np.float32)
+
+        scores = maxsim(query, [doc1, doc2])
+        assert len(scores) == 2
+        assert scores[0] > scores[1]
+
+    def test_batch_dim_mismatch_is_named(self) -> None:
+        with pytest.raises(ValueError, match=r"dim mismatch"):
+            maxsim_batch(
+                [np.zeros((2, 8), dtype=np.float32)],
+                [np.zeros((3, 5), dtype=np.float32)],
+            )
+
+    def test_batch_empty_document_is_named(self) -> None:
+        with pytest.raises(ValueError, match=r"documents\[0\] has 0 tokens"):
+            maxsim_batch(
+                [np.zeros((2, 8), dtype=np.float32)],
+                [np.zeros((0, 8), dtype=np.float32)],
+            )
+
+    def test_batch_valid_input_is_unaffected(self) -> None:
+        queries = [np.array([[1.0, 0.0]], dtype=np.float32), np.array([[0.0, 1.0]], dtype=np.float32)]
+        docs = [np.array([[1.0, 0.0]], dtype=np.float32), np.array([[0.0, 1.0]], dtype=np.float32)]
+
+        scores = maxsim_batch(queries, docs)
+        assert scores.shape == (2, 2)
+        assert scores[0, 0] > scores[0, 1]

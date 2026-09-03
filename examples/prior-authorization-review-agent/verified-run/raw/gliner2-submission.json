@@ -1,0 +1,68 @@
+{
+  "entities": [
+    {
+      "text": "L1851",
+      "label": "procedure code",
+      "score": 0.978515625,
+      "start": 31,
+      "end": 36,
+      "bbox": null
+    },
+    {
+      "text": "HCPCS coding",
+      "label": "standard written order",
+      "score": 0.6884765625,
+      "start": 385,
+      "end": 397,
+      "bbox": null
+    },
+    {
+      "text": "practitioner's medical record",
+      "label": "medical record",
+      "score": 0.65869140625,
+      "start": 408,
+      "end": 437,
+      "bbox": null
+    },
+    {
+      "text": "Proof of delivery",
+      "label": "proof of delivery",
+      "score": 0.7314453125,
+      "start": 487,
+      "end": 504,
+      "bbox": null
+    },
+    {
+      "text": "face-to-face encounter",
+      "label": "proof of delivery",
+      "score": 0.62646484375,
+      "start": 510,
+      "end": 532,
+      "bbox": null
+    },
+    {
+      "text": "7 months ago",
+      "label": "time period",
+      "score": 0.9765625,
+      "start": 533,
+      "end": 545,
+      "bbox": null
+    }
+  ],
+  "relations": [],
+  "classifications": [],
+  "objects": [],
+  "id": "cms-l1851-submission",
+  "model": "fastino/gliner2-large-v1",
+  "request": {
+    "id": "019fe8ae-d0b3-72f3-b9c4-a69d8ac6040e",
+    "credits_debited": 3,
+    "rate_book_version": "2026-07-26-production-bootstrap-v2",
+    "usage": {
+      "input_tokens": 112,
+      "credits_charged": 3,
+      "rate_book_version": "2026-07-26-production-bootstrap-v2"
+    },
+    "execution_identity_sha256": "a61058c96cb7d88459f63949845a8b35aa0b258042898d6159adf80eff846963"
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "name": "@superlinked/sie-lancedb",
+  "version": "0.7.2",
+  "description": "SIE embedding function and reranker for LanceDB",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src tests",
+    "lint-fix": "biome check --write src tests",
+    "prepack": "pnpm run build"
+  },
+  "dependencies": {
+    "@superlinked/sie-sdk": "workspace:*"
+  },
+  "peerDependencies": {
+    "@lancedb/lancedb": ">=0.17.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@lancedb/lancedb": "^0.17.0",
+    "apache-arrow": "^18.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "keywords": [
+    "sie",
+    "embeddings",
+    "lancedb",
+    "lance",
+    "vector",
+    "database",
+    "reranker"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/superlinked/sie.git",
+    "directory": "integrations/sie_ts_lancedb"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

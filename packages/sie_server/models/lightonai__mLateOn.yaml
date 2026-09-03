@@ -1,0 +1,49 @@
+sie_id: lightonai/mLateOn
+hf_id: lightonai/mLateOn
+hf_revision: 35391e36392085d72a93d232f6122607a234ad7a
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode:
+    dense: null
+    sparse: null
+    multivector:
+      dim: 128
+  score: {}
+  extract: null
+max_sequence_length: 8192
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.colbert_modernbert_flash.adapter:ColBERTModernBERTFlashAdapter
+    adapter_options:
+      loadtime:
+        # 3_Dense/config.json claim: {"out_features": 128} — the final module of
+        # the evidence's Dense stack (768 -> 1536 -> 768 -> 128); the verdict's
+        # machine-stamped token_dim (#2789).
+        token_dim: 128
+        # The pinned PyLate recipe declares 8192 total query/document tokens.
+        # sentence_bert_config.json stores 8191 because upstream inserts the
+        # configured marker as a separate token after backbone tokenization;
+        # this adapter tokenizes the marker and text together.
+        max_seq_length: 8192
+        # config_sentence_transformers.json is the checkpoint's canonical
+        # PyLate recipe for prefixes, lengths, query expansion, and skiplist.
+        query_prefix: '[Q] '
+        doc_prefix: '[D] '
+        # PyLate ColBERT.encode normalizes token embeddings by default before
+        # MaxSim; the checkpoint does not override that call-time default.
+        normalize: true
+        query_max_length: 8192
+        # PyLate retains special tokens and masks only padding when query
+        # expansion is disabled, as declared by this checkpoint.
+        skip_special_tokens: false
+        # The pinned recipe declares skiplist_words: [].
+        doc_punctuation_skiplist: false
+      # No serving-time truncation override: preserve the pinned 8192-token
+      # query/document recipe.
+      runtime: {}

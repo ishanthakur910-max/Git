@@ -1,0 +1,35 @@
+sie_id: sentence-transformers/all-MiniLM-L6-v2
+hf_id: sentence-transformers/all-MiniLM-L6-v2
+hf_revision: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode:
+    dense:
+      dim: 384
+    sparse: null
+    multivector: null
+  score: null
+  extract: null
+max_sequence_length: 256
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.sentence_transformer:SentenceTransformerDenseAdapter
+    adapter_options:
+      loadtime:
+        trust_remote_code: false
+      runtime:
+        pooling: mean
+        normalize: true
+  candle:
+    extends: default
+    adapter_path: sie_server_rust.adapters.candle:CandleEmbeddingAdapter
+    adapter_options:
+      runtime:
+        pooling: mean
+        normalize: true

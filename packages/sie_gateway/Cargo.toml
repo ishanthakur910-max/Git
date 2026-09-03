@@ -1,0 +1,149 @@
+[package]
+name = "sie-gateway"
+version = "0.7.2"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "sie-gateway"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart", "ws"] }
+base64 = "0.22"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+# Already in the lock transitively (axum's `to_bytes` IS `Limited::collect`).
+# Direct so the compat wrapper can downcast `LengthLimitError` and tell "the
+# body exceeded the read bound" apart from "the stream broke" — two conditions
+# `axum::Error` otherwise collapses into one opaque value (#2617).
+http-body-util = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "stream", "rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+tokio-tungstenite = "0.29"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+thiserror = "2"
+dashmap = "6"
+tower = "0.5"
+tower-http = { version = "0.7", features = ["cors"] }
+bytes = "1"
+http = "1"
+
+# Phase 4: Model registry + hot reload
+arc-swap = "1"
+sha2 = "0.11"
+notify = "8"
+
+# Phase 5: Auth
+subtle = "2"
+
+# Phase 6: Kubernetes discovery
+kube = { version = "4", features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.28", features = ["latest"] }
+rand = "0.10"
+
+# Phase 11: Request coalescing (MD5 for params hash)
+md-5 = "0.11"
+
+# HRW direct-dispatch routing (xxh3 64-bit hashing of routing keys)
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# Phase 8: NATS integration
+async-nats = "0.49"
+uuid = { version = "1", features = ["v4", "v7"] }
+
+# Phase 10: Queue mode (msgpack serialization)
+rmp-serde = "1"
+rmp = "0.8"
+rmpv = { version = "1", features = ["with-serde"] }
+
+# Async traits and filesystem locking
+async-trait = "0.1"
+fs2 = "0.4"
+serde_bytes = "0.11"
+percent-encoding = "2"
+
+# Cloud payload store backends (opt-in)
+object_store = { version = "0.14", optional = true, features = ["aws", "gcp", "azure"] }
+url = { version = "2", optional = true }
+reqsign-aliyun-oss = { version = "=3.1.5", optional = true }
+reqsign-core = { version = "=3.3.1", optional = true }
+reqsign-file-read-tokio = { version = "=3.0.6", optional = true }
+reqsign-http-send-reqwest = { version = "=4.0.6", optional = true }
+utoipa = "5.4.0"
+
+# W3C Trace Context propagation. The gateway extracts the
+# inbound `traceparent` / `tracestate` HTTP headers, opens a child
+# span around proxy/publish, and injects the resulting context into
+# the JetStream work envelope so the worker can continue the trace.
+#
+# Versions tracked together. OTel breaks compatibility across minor
+# versions, so bumping requires updating all five lines.
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+# Shared OTLP transport/proxy/resource/propagation plumbing (#2339).
+sie-telemetry = { path = "../sie_telemetry", features = ["http-propagation"] }
+# `grpc-tonic` keeps the historical in-cluster/Helm OTLP/gRPC path; `http-proto`
+# + `reqwest-blocking-client` add the OTLP/HTTP `http/protobuf` exporter the
+# MANAGED Modal collector needs (it publishes only OTLP/HTTP :4318, behind
+# proxy-auth headers). The BLOCKING reqwest client is deliberate (#1878 runtime
+# fix): the SDK's `BatchSpanProcessor` / `PeriodicReader` run the export on a
+# dedicated std thread via `futures_executor::block_on` with NO Tokio reactor,
+# so an async reqwest client panics there ("there is no reactor running"). The
+# blocking client drives its own internal runtime and works on that thread — it
+# is also opentelemetry-otlp's own default HTTP client for exactly this reason.
+# `metrics` adds the MeterProvider export path so the gateway pushes a bounded
+# request counter + duration histogram alongside its spans. TLS: `reqwest-rustls` pins rustls on the
+# HTTP exporter's reqwest client (in reqwest 0.13 `default-tls` == rustls, NOT
+# openssl — the zigbuild cross-compile stays clean) and `tls-ring` gives the
+# tonic gRPC path rustls-over-ring for an HTTPS collector (engaged only for
+# https endpoints, so the plaintext in-cluster :4317 gRPC path is untouched).
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "grpc-tonic",
+    "http-proto",
+    "trace",
+    "metrics",
+    "logs",
+    "reqwest-blocking-client",
+    "reqwest-rustls",
+    "tls-ring",
+] }
+opentelemetry-http = "0.32"
+tracing-opentelemetry = "0.33"
+
+[features]
+default = []
+cloud-storage = [
+    "dep:object_store",
+    "dep:reqsign-aliyun-oss",
+    "dep:reqsign-core",
+    "dep:reqsign-file-read-tokio",
+    "dep:reqsign-http-send-reqwest",
+    "dep:url",
+]
+# Test-target-only seam used by the managed composition's release telemetry
+# benchmark. It installs a synchronous in-memory reader, so the timed path
+# exercises the real facade without exporter network or background work.
+telemetry-benchmarks = ["opentelemetry_sdk/experimental_metrics_custom_reader"]
+# Compile-in the raw-routing-key field on `RoutingKeyResolved` and the
+# `SIE_ROUTING_LOG_RAW` env-var read paths. Without this feature, raw
+# routing keys CANNOT appear in logs regardless of the env var — the
+# fields and code paths simply don't exist in the binary. Off by default
+# so production release builds are privacy-safe at compile time.
+raw-routing-logs = []
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+wiremock = "0.6"
+# `testing` unlocks the in-memory metric exporter used to assert the gateway's
+# the bounded request metric pair is actually recorded + exported (observability tests).
+opentelemetry_sdk = { version = "0.32", features = ["testing"] }

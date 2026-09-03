@@ -1,0 +1,28 @@
+{{- $maxWorkerChildCount := int (include "sie-cluster.worker.maxChildCount" .) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sie-cluster.worker.serviceName" . }}
+  namespace: {{ include "sie-cluster.namespace" . }}
+  labels:
+    {{- include "sie-cluster.worker.labels" . | nindent 4 }}
+spec:
+  # Headless service for StatefulSet DNS resolution
+  clusterIP: None
+  ports:
+    - name: http
+      port: {{ .Values.workers.common.port }}
+      targetPort: http
+      protocol: TCP
+    {{- if gt $maxWorkerChildCount 1 }}
+    {{- range $i := until $maxWorkerChildCount }}
+    {{- if gt $i 0 }}
+    - name: http-{{ $i }}
+      port: {{ add $.Values.workers.common.port $i }}
+      targetPort: http-{{ $i }}
+      protocol: TCP
+    {{- end }}
+    {{- end }}
+    {{- end }}
+  selector:
+    {{- include "sie-cluster.worker.selectorLabels" . | nindent 4 }}

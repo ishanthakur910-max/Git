@@ -1,0 +1,188 @@
+sie_id: Qwen/Qwen3-4B-Instruct-2507
+hf_id: Qwen/Qwen3-4B-Instruct-2507
+hf_revision: cdbee75f17c01a7cc42f958dc650907174af0554
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  # kv_budget_tokens now lives on profiles (below). The KV calibration
+  # follow-up publishes the tuned value; the placeholder here is conservative
+  # and assumes Qwen3-4B's ~150 KB/token KV footprint on an L4 (24 GB,
+  # mem_fraction_static=0.85).
+  generate:
+    context_length: 32768
+    max_output_tokens: 4096
+    capabilities:
+      # This model pins ``grammar_backend: xgrammar`` on every profile (see
+      # adapter_options.loadtime below). The switch off the default Outlines
+      # backend was forced by a request-time crash: Outlines' FSM engine
+      # (interegular) raises ``Unsupported`` on regex anchors (``^``/``$``) and
+      # that uncaught exception SIGQUITs SGLang's scheduler — a single
+      # user-supplied anchored regex (e.g. ``^[0-9]{5}$``) killed the whole
+      # lane (peer-closed-connection 500s for every later request). XGrammar
+      # tolerates anchors and serves ``json_schema`` + ``regex`` identically.
+      # ``"ebnf"`` is still NOT advertised: XGrammar can compile it, but the
+      # gateway gates on this exact list and the via-SIE EBNF smoke for this
+      # model has not been run — add ``"ebnf"`` only once it passes. The
+      # ``test_advertised_ebnf_requires_capable_backend`` consistency test
+      # guards this invariant. Adding a new ``grammar.kind`` variant requires
+      # both the gateway parser and this list to be updated.
+      grammar: ["json_schema", "regex"]
+      streaming: true
+      # Qwen3-4B-Instruct's chat template emits OpenAI-compatible
+      # ``<tool_call>{...}</tool_call>`` blocks when ``tools`` is
+      # present in the rendered messages; the worker's
+      # ``parse_tool_call_stream`` consumes those blocks and surfaces
+      # them on ``delta.tool_calls`` for SSE and on
+      # ``message.tool_calls`` for non-streaming requests.
+      tools: true
+      # Validated for code generation before enabling the code alias.
+      # Backs the model="code" alias. Informational (not request-gated).
+      code: true
+      # Backs the model="sql" alias. NOTE: this profile runs the outlines
+      # backend (no ebnf), so SQL output here relies on the model's native
+      # text-to-SQL ability, NOT an EBNF grammar constraint. Re-add ``"ebnf"``
+      # to ``grammar`` above (behind an xgrammar profile + via-SIE EBNF smoke)
+      # to enable grammar-constrained SQL. Informational (not request-gated).
+      sql: true
+    # Forwarded through the bounded template-kwargs contract to
+    # ``tokenizer.apply_chat_template(**kwargs)`` for OpenAI-shaped messages.
+    # Qwen3's chat template emits a ``<think>``/``</think>`` reasoning block
+    # unless this flag suppresses it.
+    chat_template_kwargs:
+      enable_thinking: false
+    # Schemas/regexes the worker pre-compiles at model load so the first
+    # request hitting them skips the Outlines compile (cold TTFT win).
+    # Failures here log and record
+    # ``sie.worker.generation.grammar.compile.duration`` with
+    # ``phase="prewarm", outcome="error"`` without blocking model load — add
+    # entries only for shapes you know are hot.
+    prewarm_grammars:
+      # NOTE: the worker only prewarms the Outlines backend (XGrammar compiles
+      # are cheap and done on demand), so under ``grammar_backend: xgrammar``
+      # (above) this block is an inert no-op — retained as valid config for the
+      # Outlines fallback. Kept de-anchored so it stays crash-safe if a profile
+      # is ever switched back to Outlines (interegular rejects ``^``/``$`` with
+      # ``Unsupported``, which SIGQUITs SGLang's scheduler); the
+      # ``test_outlines_models_have_no_anchored_prewarm_regex`` guard enforces
+      # this. Use ``(yes|no)``.
+      - name: yes_no
+        kind: regex
+        value: "(yes|no)"
+      - name: short_answer
+        kind: json_schema
+        value:
+          type: object
+          properties:
+            answer:
+              type: string
+          required: [answer]
+max_sequence_length: 32768
+# KV-cache memory math (Qwen3-4B-Instruct-2507, bf16):
+#   layers=36, kv_heads=8, head_dim=128, bytes_per_elem=2
+#   kv_bytes_per_token = 2 (k+v) × 36 × 8 × 128 × 2 = 147,456 B ≈ 144 KB
+# Theoretical max KV tokens per GPU (assuming ~8 GB weights, mem_fraction_static=0.85):
+#   l4         (24 GB):  (24 × 0.85 − 8) GB / 144 KB ≈   90,000 tokens
+#   a100-40gb  (40 GB):  (40 × 0.85 − 8) GB / 144 KB ≈  189,000 tokens
+#   h100       (80 GB):  (80 × 0.85 − 8) GB / 144 KB ≈  437,000 tokens
+# kv_budget_tokens is set to ~40% of theoretical max, matching the L4
+# baseline ratio (32768/90000 ≈ 36%). The headroom absorbs batch growth,
+# speculative side-cell, grammar/Outlines compile arena, fragmentation.
+# Final empirical validation should use concurrency and OOM-boundary sweeps.
+profiles:
+  default:
+    # max_batch_tokens is a generic engine knob; generation does not batch
+    # at the SIE layer (SGLang batches internally) but the validator
+    # requires the field to be set.
+    max_batch_tokens: 16384
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.generation:SGLangGenerationAdapter
+    # L4 baseline — empirically gated by the speculative-decoding + calibration work.
+    kv_budget_tokens: 32768
+    adapter_options:
+      loadtime:
+        mem_fraction_static: 0.85
+        served_model_name: Qwen/Qwen3-4B-Instruct-2507
+        # XGrammar (not the adapter-default Outlines): Outlines' interegular
+        # FSM engine raises ``Unsupported`` on regex anchors (``^``/``$``) and
+        # SIGQUITs SGLang's scheduler, so a user-supplied anchored ``regex``
+        # response_format crashed the whole lane. XGrammar tolerates anchors
+        # and serves json_schema + regex identically (GPU-verified on L4,
+        # SGLang 0.5.10.post1). Same backend the Gemma-4 profiles pin.
+        grammar_backend: xgrammar
+        # speculative decoding (MTP/EAGLE/NGRAM) intentionally absent;
+        # week-1 validation decides whether to promote a side-cell. See §4.9.
+      runtime:
+        first_chunk_timeout_s: 30
+        inter_chunk_timeout_s: 10
+        overall_timeout_s: 300
+        default_sampling:
+          temperature: 0.7
+          top_p: 0.9
+        stop_tokens:
+          - "<|im_end|>"
+  # Analytical defaults for a100-40gb / h100. Production
+  # capacity also grows: with 2-4× the KV budget the context window can be
+  # widened proportionally so longer-context workloads (RAG with large
+  # retrieved passages) fit comfortably. ``max_output_tokens`` doubles
+  # to 8192/16384 respectively — beyond that, latency hurts more than
+  # quality helps for instruction-style chat traffic.
+  a100-40gb:
+    max_batch_tokens: 32768
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.generation:SGLangGenerationAdapter
+    # Empirically calibrated on Modal A100-SXM4-40GB
+    # (sglang 0.5.9, mem_fraction_static=0.85, context_length=32768).
+    # SGLang's /server_info reports:
+    #   weight=7.71 GB, kvcache=25.42 GB, graph=0.18 GB,
+    #   token_capacity=185,081 tokens
+    # ``kv_budget_tokens`` sized for 4 concurrent admissions:
+    #   185,081 / 4 = 46,270 → round down to 45,056 for headroom.
+    # Re-calibrate if SGLang version or mem_fraction_static changes.
+    kv_budget_tokens: 45056
+    adapter_options:
+      loadtime:
+        mem_fraction_static: 0.85
+        served_model_name: Qwen/Qwen3-4B-Instruct-2507
+        # XGrammar, matching the default profile — Outlines crashes SGLang's
+        # scheduler on anchored regexes (``^``/``$``). See the default profile.
+        grammar_backend: xgrammar
+      runtime:
+        first_chunk_timeout_s: 30
+        inter_chunk_timeout_s: 10
+        overall_timeout_s: 300
+        default_sampling:
+          temperature: 0.7
+          top_p: 0.9
+        stop_tokens:
+          - "<|im_end|>"
+  h100:
+    max_batch_tokens: 65536
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.generation:SGLangGenerationAdapter
+    # Empirically calibrated on Modal H100 80GB HBM3
+    # (sglang 0.5.9, mem_fraction_static=0.85, context_length=32768).
+    # SGLang's /server_info reports:
+    #   weight=7.71 GB, kvcache=59.0 GB, graph=0.43 GB,
+    #   token_capacity=429,645 tokens
+    # ``kv_budget_tokens`` sized for 4 concurrent admissions:
+    #   429,645 / 4 = 107,411 → round down to 106,496 for headroom.
+    kv_budget_tokens: 106496
+    adapter_options:
+      loadtime:
+        mem_fraction_static: 0.85
+        served_model_name: Qwen/Qwen3-4B-Instruct-2507
+        # XGrammar, matching the default profile — Outlines crashes SGLang's
+        # scheduler on anchored regexes (``^``/``$``). See the default profile.
+        grammar_backend: xgrammar
+      runtime:
+        first_chunk_timeout_s: 30
+        inter_chunk_timeout_s: 10
+        overall_timeout_s: 300
+        default_sampling:
+          temperature: 0.7
+          top_p: 0.9
+        stop_tokens:
+          - "<|im_end|>"

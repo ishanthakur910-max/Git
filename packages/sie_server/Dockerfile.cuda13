@@ -1,0 +1,297 @@
+# syntax=docker/dockerfile:1
+# SIE Server - CUDA 13 Image (SGLang cu130 bundles)
+# Build from repo root:
+#   docker build -f packages/sie_server/Dockerfile.cuda13 --build-arg BUNDLE=sglang-cu130 -t sie-server:cuda13-sglang-cu130 .
+#
+# WHY A SEPARATE PLATFORM: the sglang-cu130 bundle needs sglang 0.5.13, which pins
+# torch==2.11.0 (cu130) + transformers 5.8.x and JIT-compiles cu130 kernels
+# (flashinfer / tvm_ffi) through nvcc on first decode — so it requires a CUDA 13
+# devel runtime. Keeping it here (platform ``cuda13``) instead of inside
+# Dockerfile.cuda12 means a ``cuda13-sglang-cu130`` image is honestly labelled CUDA 13,
+# not a CUDA-13 image hiding under a ``cuda12-*`` tag (see #1415).
+#
+# STRUCTURE: mirrors Dockerfile.cuda12's deps→base→builder→runtime stages so the
+# shared logic (standalone Python, editable installs, bundle-libs .pth shadow,
+# venv cleanup, --link COPY caching) stays consistent — KEEP THE TWO IN SYNC when
+# editing shared stages. Differences vs cuda12: CUDA 13 bases throughout, and the
+# builder uses the cu130 ``uv`` path unconditionally (every cuda13 bundle is a
+# cu130 bundle), so there is no per-bundle runtime indirection.
+#
+# DUAL-TORCH CARRY: the shared base venv still installs torch 2.9 (cu129) from
+# pyproject, and the sglang-cu130 bundle overlays torch 2.11 (cu130) into bundle-libs
+# (~+3 GB). Slimming torch out of sie-server core to drop the carry is a tracked
+# follow-up (#1415).
+
+ARG BUNDLE=sglang-cu130
+ARG UV_VERSION=0.9.28
+
+# Build the native Rust extension from checked-in source; it is not published
+# to PyPI.
+FROM ghcr.io/pyo3/maturin:v1.13.3 AS audio-prep-builder
+WORKDIR /io
+# The crate is a Cargo workspace member: its pins live in the root
+# Cargo.lock, and loading the workspace needs every member's manifest+sources.
+COPY Cargo.toml Cargo.lock ./
+COPY packages/sie_audio_prep/ packages/sie_audio_prep/
+COPY packages/sie_gateway/ packages/sie_gateway/
+COPY packages/sie_server_sidecar/ packages/sie_server_sidecar/
+COPY packages/sie_telemetry/ packages/sie_telemetry/
+RUN maturin build --release --locked --out /dist --manifest-path packages/sie_audio_prep/Cargo.toml
+
+# =============================================================================
+# Dependency image: uv and standalone Python 3.12 (CUDA 13 devel base)
+# =============================================================================
+FROM nvidia/cuda:13.0.0-cudnn-devel-ubuntu22.04 AS deps
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_NO_CACHE=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_INSTALL_DIR=/opt/python \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Minimal apt footprint: just enough for curl + git; no deadsnakes PPA.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git
+
+ARG UV_VERSION
+RUN curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | sh \
+    && mv /root/.local/bin/uv /bin/uv \
+    && mv /root/.local/bin/uvx /bin/uvx
+
+# Install a standalone Python 3.12 from python-build-standalone (fully relocatable,
+# glibc 2.17+ compat). This replaces the deadsnakes PPA entirely.
+RUN uv python install 3.12 \
+    && ln -s "$(uv python find 3.12)" /usr/local/bin/python3.12 \
+    && ln -sf /usr/local/bin/python3.12 /usr/local/bin/python3 \
+    && ln -sf /usr/local/bin/python3.12 /usr/local/bin/python
+
+WORKDIR /app
+
+COPY packages/sie_sdk/pyproject.toml /tmp/sie_sdk/pyproject.toml
+COPY packages/sie_server/pyproject.toml ./pyproject.toml
+COPY --from=audio-prep-builder /dist /tmp/audio-prep-dist
+
+# Stubs for editable metadata generation — bundles/ and models/ are referenced
+# by force-include in pyproject.toml and must exist; real contents are copied
+# in the base stage.
+RUN mkdir -p /tmp/sie_sdk/src/sie_sdk src/sie_server bundles models \
+    && touch /tmp/sie_sdk/src/sie_sdk/__init__.py \
+    && touch src/sie_server/__init__.py
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3.12 -m venv .venv \
+    && .venv/bin/pip install --upgrade pip \
+    && .venv/bin/pip install \
+        /tmp/audio-prep-dist/*.whl \
+        -e "/tmp/sie_sdk[storage]" \
+        -e ".[gpu-metrics]"
+
+# =============================================================================
+# Shared CUDA base: source install and venv finalization
+# =============================================================================
+FROM deps AS base
+
+# Source-layer cache key — forces source layers (and the editable reinstall) to
+# rebuild per commit while the expensive dependency install in ``deps`` stays
+# cached. CI passes ``--build-arg SIE_SRC_REV=$(git rev-parse --short HEAD)``.
+ARG SIE_SRC_REV=dev
+RUN echo "sie source revision: ${SIE_SRC_REV}"
+
+COPY packages/sie_sdk/src /tmp/sie_sdk/src
+COPY packages/sie_server/src src/
+COPY packages/sie_server/bundles bundles/
+COPY packages/sie_server/models models/
+
+# Editable reinstall over the stub stage so runtime path-based lookups
+# (e.g. sie_server.cli resolve-deps reading ./bundles) keep working.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    .venv/bin/pip install --no-deps \
+        -e /tmp/sie_sdk \
+        -e .
+
+# Sanity-check shared venv imports.
+RUN .venv/bin/python -c "import sie_audio_prep, torch; print(torch.__version__)"
+
+# Register bundle-libs on sys.path via a .pth executed by site.py at startup.
+# sys.path.insert(0, ...) puts bundle-libs at position 0 so bundle-specific
+# versions SHADOW the shared venv (the cu130 torch/transformers/sglang
+# overlay). Content is identical for every bundle, so writing it here keeps the
+# shared venv layer byte-identical.
+RUN echo "import sys; sys.path.insert(0, '/app/bundle-libs')" \
+    > /app/.venv/lib/python3.12/site-packages/_sie_bundle.pth
+
+# Conservative venv cleanup — only runtime-safe removals. Keep torch/include
+# (triton JIT compiles against torch C++ headers for sglang/flashinfer custom
+# ops), gcc/libc6-dev, and wheel RECORD metadata. Native loaders such as
+# tvm_ffi use RECORD to locate packaged shared libraries.
+RUN set -eux; \
+    cd /app/.venv/lib/python3.12/site-packages; \
+    find . -type d -name '__pycache__' -prune -exec rm -rf {} +; \
+    find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete; \
+    find . -type d -name 'tests' -prune -exec rm -rf {} +; \
+    rm -rf torch/test torch/utils/tensorboard torch/utils/bottleneck 2>/dev/null || true; \
+    find torch -type f -name '*.a' -delete 2>/dev/null || true; \
+    find nvidia -type f -name '*.a' -delete 2>/dev/null || true; \
+    rm -rf /app/.venv/share/jupyter 2>/dev/null || true; \
+    find /app/.venv -exec touch -h -d @0 {} + 2>/dev/null || true
+
+# =============================================================================
+# Bundle dependency builder: cu130 bundle-specific deps
+# =============================================================================
+FROM base AS builder
+
+ARG BUNDLE
+
+RUN .venv/bin/python -m sie_server.cli resolve-deps \
+    --bundle "${BUNDLE}" \
+    --models-dir models \
+    > /tmp/bundle-requirements.txt \
+    && echo "Bundle ${BUNDLE} requirements:" \
+    && cat /tmp/bundle-requirements.txt
+
+# cu130 bundle deps go into a separate site-packages tree (``bundle-libs``,
+# prepended to sys.path via the .pth above). The sglang-cu130 bundle needs torch 2.11
+# from the cu130 PyTorch index, where the only ``2.11.0`` is the ``+cu130``
+# local-version wheel; pip's multi-index resolution does not reliably prefer it
+# over PyPI's default-CUDA build, so cuda13 bundles resolve with ``uv`` and
+# ``--index-strategy unsafe-best-match`` against the cu130 PyTorch + sglang
+# indexes (so torch 2.11 + sgl-kernel/flashinfer land for cu130). This uv +
+# cu130-index resolution was validated with sglang 0.5.13, torch 2.11, and a
+# cu130 runtime in a fresh GPU environment.
+#
+# COVERAGE NOTE: the cuda13 image CI smoke (.github/workflows/sglang-cu130-image.yml)
+# builds this image and asserts on CPU that the bundle-libs cu130 overlay
+# SHADOWS the base venv (import torch -> 2.11+cu130, transformers 5.x). It does
+# NOT exercise GPU init: the cu12 base venv + cu130 bundle-libs both expose the
+# ``nvidia/`` namespace package, and a cu130-missing submodule could in theory
+# fall through to a cu12 ``.so`` at first decode. That dual-torch GPU path is
+# covered only by live GPU runs (Modal; first release health-check) — slimming
+# torch out of sie-server core to remove the carry is the tracked fix (#1415).
+# UV_NO_CACHE=0 makes the --mount uv cache effective; UV_COMPILE_BYTECODE=0 for
+# --no-compile parity. UV_HTTP_TIMEOUT=600 raises uv's per-request timeout from
+# the 30s default: the cu130 closure pulls several very large NVIDIA wheels from
+# pypi.nvidia.com (cufft ~204 MB, cusolver ~191 MB, nccl/cusparselt/nvshmem
+# 130-190 MB), and downloading them concurrently over a congested link exceeds
+# 30s, which previously failed the build with "nvidia-nvshmem-cu13 ... operation
+# timed out" after retries.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/uv \
+    mkdir -p /app/bundle-libs; \
+    if [ -s /tmp/bundle-requirements.txt ]; then \
+        UV_NO_CACHE=0 UV_COMPILE_BYTECODE=0 UV_HTTP_TIMEOUT=600 uv pip install \
+            --python /app/.venv/bin/python \
+            --target=/app/bundle-libs \
+            --index-strategy unsafe-best-match \
+            --prerelease=allow \
+            --extra-index-url https://download.pytorch.org/whl/cu130 \
+            --extra-index-url https://docs.sglang.ai/whl/cu130/ \
+            -r /tmp/bundle-requirements.txt ; \
+    fi
+
+# bundle-libs cleanup (symmetric to the .venv cleanup in base). Preserve
+# dist-info RECORD files so tvm_ffi can find xgrammar's native binding.
+RUN set -eux; \
+    if [ -d /app/bundle-libs ]; then \
+        cd /app/bundle-libs; \
+        find . -type d -name '__pycache__' -prune -exec rm -rf {} +; \
+        find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete; \
+        find . -type d -name 'tests' -prune -exec rm -rf {} +; \
+        rm -rf torch/test torch/utils/tensorboard torch/utils/bottleneck 2>/dev/null || true; \
+        find torch -type f -name '*.a' -delete 2>/dev/null || true; \
+        find nvidia -type f -name '*.a' -delete 2>/dev/null || true; \
+    fi; \
+    find /app/bundle-libs -exec touch -h -d @0 {} + 2>/dev/null || true
+
+# =============================================================================
+# Runtime image (CUDA 13 devel — nvcc for flashinfer/tvm_ffi first-decode JIT)
+# =============================================================================
+FROM nvidia/cuda:13.0.0-cudnn-devel-ubuntu22.04 AS runtime
+ENV CUDA_HOME=/usr/local/cuda \
+    LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# gcc + libc6-dev: triton JIT compiles CUDA kernels at first use.
+# libnuma1: required by sgl_kernel; import fails with a misleading SM-arch error
+#   without it.
+# libgomp1: torch OpenMP runtime.
+# libspatialindex-c6 / libgl1 / libglib2.0-0 / libice6 / libsm6 / libx11-6 /
+#   libxcb1 / libxext6: docling/opencv dlopen chain (kept symmetric with the
+#   cuda12 runtime so the same model bundle deps import cleanly).
+# ninja-build: flashinfer invokes ninja during first-use SGLang kernel JIT.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    gcc \
+    libc6-dev \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    libice6 \
+    libnuma1 \
+    libsm6 \
+    libspatialindex-c6 \
+    ninja-build \
+    libx11-6 \
+    libxcb1 \
+    libxext6
+
+RUN groupadd -g 1000 sie && useradd -u 1000 -g sie -m sie
+
+WORKDIR /app
+
+# Standalone Python 3.12 tree + symlinks. Pulled from `base` since /opt/python
+# is established in the deps stage and never touched later.
+COPY --link --from=base /opt/python /opt/python
+RUN set -e; \
+    py=$(ls -d /opt/python/cpython-3.12*/bin/python3.12 | head -1); \
+    [ -x "$py" ] || { echo "no standalone python found under /opt/python"; exit 1; }; \
+    ln -sf "$py" /usr/local/bin/python3.12; \
+    ln -sf /usr/local/bin/python3.12 /usr/local/bin/python3; \
+    ln -sf /usr/local/bin/python3.12 /usr/local/bin/python
+
+# Shared content — identical across bundles of this platform. Ordered BEFORE the
+# per-bundle COPY so bundle-libs is the only invalidating layer.
+COPY --link --from=base --chown=1000:1000 /app/.venv /app/.venv
+# Source trees copied WITHOUT --link (buildx --link cached on a digest that did
+# not reliably invalidate on source change — see Dockerfile.cuda12).
+COPY --from=base --chown=1000:1000 /app/src /app/src
+COPY --from=base --chown=1000:1000 /tmp/sie_sdk/src /tmp/sie_sdk/src
+COPY --link --from=base --chown=1000:1000 /app/models /app/models
+COPY --link --from=base --chown=1000:1000 /app/bundles /app/bundles
+# Bundle-specific extras — last layer so shared layers above stay cached.
+COPY --link --from=builder --chown=1000:1000 /app/bundle-libs /app/bundle-libs
+
+RUN mkdir -p /app/evals /app/.cache/huggingface /app/.cache/sie-kernels \
+    && chown -R sie:sie /app/evals /app/.cache
+
+# Declare BUNDLE only here (LABEL + ENV) so layers above are bundle-agnostic.
+ARG BUNDLE
+
+LABEL org.opencontainers.image.title="SIE Server" \
+      org.opencontainers.image.description="Search Inference Engine - ${BUNDLE} bundle (CUDA 13)" \
+      sie.bundle="${BUNDLE}"
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/app/.cache/huggingface \
+    SIE_SGLANG_KERNEL_CACHE_ROOT=/app/.cache/sie-kernels \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    SIE_BUNDLE="${BUNDLE}"
+
+USER sie
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" || exit 1
+
+ENTRYPOINT ["python", "-m", "sie_server.cli"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8080", "--models-dir", "/app/models"]

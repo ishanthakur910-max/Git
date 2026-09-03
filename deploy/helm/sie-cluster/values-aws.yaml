@@ -1,0 +1,180 @@
+# AWS EKS specific values
+fullnameOverride: sie
+
+# Install sub-charts (matches GKE)
+keda:
+  install: true
+
+kube-prometheus-stack:
+  install: true
+  # EKS manages its own control plane — disable control-plane monitors
+  kubeApiServer:
+    enabled: false
+  kubeControllerManager:
+    enabled: false
+  kubeScheduler:
+    enabled: false
+  kubeProxy:
+    enabled: false
+  kubeEtcd:
+    enabled: false
+
+observability:
+  logs:
+    install: true
+
+kubernetes-event-exporter:
+  install: false
+
+# Autoscaling via KEDA (queries Prometheus for scaling decisions)
+# prometheusAddress is auto-derived when kube-prometheus-stack.install=true
+autoscaling:
+  enabled: true
+  # Match GCP (600s/300s) - must survive gaps between long evaluation/workload transitions
+  cooldownPeriod: 600
+  scaleDownStabilization: 300
+
+# Enable Prometheus scraping (required for KEDA autoscaling)
+serviceMonitor:
+  enabled: true
+  labels:
+    app.kubernetes.io/part-of: sie
+
+# AWS machine profiles (extends base machineProfiles)
+machineProfiles:
+  # AWS g6.xlarge (NVIDIA L4) — mapped to "l4" so gpu="l4" works on both clouds
+  l4:
+    gpuType: nvidia-l4
+    machineType: g6.xlarge
+    spot: false
+
+# Ingress via nginx-ingress (matches GCP)
+ingress:
+  enabled: true
+  className: nginx
+  # TLS defaults to BYO (user-supplied kubernetes.io/tls Secret).
+  # Three other modes are supported:
+  #
+  #   1) cert-manager + Let's Encrypt (external cert-manager install):
+  #      hosts:
+  #        - sie.example.com
+  #      tlsConfig:
+  #        enabled: true
+  #        mode: cert-manager
+  #        certManager:
+  #          email: ops@example.com
+  #
+  #   2) self-signed (air-gapped / on-prem; bundles cert-manager — single-tenant clusters only):
+  #      hosts:
+  #        - sie.example.com
+  #      tlsConfig:
+  #        enabled: true
+  #        mode: self-signed
+  #      # And at the top level:
+  #      # certManagerBundle:
+  #      #   certManager:
+  #      #     install: true
+  #
+  #   3) disabled (TLS terminated upstream of the Ingress):
+  #      tlsConfig:
+  #        enabled: false
+  #        mode: disabled
+
+gateway:
+  # HA configuration to match GCP
+  replicas: 2
+  # Force repull to get latest image
+  image:
+    pullPolicy: Always
+  # Resources to match GCP baseline
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+
+# sie-config control plane (singleton by design — see chart values.yaml for
+# the HA caveat). Mirroring the gateway's pullPolicy/resources so EKS installs
+# are representative of a full sie-cluster deployment.
+config:
+  enabled: true
+  image:
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+workers:
+  pools:
+    # AWS g6.xlarge pool (NVIDIA L4)
+    l4:
+      enabled: true
+      machineProfile: l4
+      gpuType: nvidia-l4
+      # No GCP-specific node selector
+      nodeSelector: {}
+      gpu:
+        count: 1
+        product: NVIDIA-L4
+      resources:
+        requests:
+          cpu: "2"
+          memory: "8Gi"
+        limits:
+          cpu: "4"
+          memory: "16Gi"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      bundles:
+        # docs→markdown, describe_image, VL-OCR, encode/score/extract. Kept warm
+        # (minReplicas: 1) — it serves the headline docs→markdown path, so a
+        # dropped document converts immediately rather than waiting on a GPU
+        # node + worker cold-start. Set to 0 to trade the always-on L4 for
+        # scale-from-zero (cheaper, but the first request is slow).
+        default:
+          minReplicas: 1
+          maxReplicas: 10
+        # Generation (Qwen3.5-4B via SGLang) — powers extract_structured /
+        # generate_structured and answer_questions' answer step. Separate bundle
+        # = its own worker (sie-worker-l4-sglang); scale-to-zero so it costs
+        # nothing until a generation request arrives.
+        sglang:
+          minReplicas: 0
+          maxReplicas: 4
+        # SGLang-backed vision extraction is non-generation work and must not
+        # share the generation worker. It reuses the identical SGLang image but
+        # has its own logical bundle, queue lane, and scale-to-zero workers.
+        sglang-vision-extract:
+          imageBundle: sglang
+          minReplicas: 0
+          maxReplicas: 4
+
+# ServiceAccount — Helm manages creation; IRSA annotation must be injected at deploy time.
+# NAMING CONTRACT: name must match the namespace/service-account binding in
+#   your workload-identity configuration (the default is "sie:sie-server").
+# To inject the IRSA role ARN at deploy time:
+#   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=<ARN>
+# Note: The hf-token secret is NOT created by the Helm chart. It must be created
+#   manually on new clusters before deploying.
+# Bash (read -rsp is bash-only):
+#   read -rsp "HF token: " HF_TOKEN; echo
+#   kubectl create secret generic hf-token --from-literal=token="$HF_TOKEN" -n sie
+#   unset HF_TOKEN
+# Or create from a file (then remove the file): kubectl create secret generic hf-token --from-file=token=/path/to/token -n sie
+serviceAccount:
+  create: true
+  name: "sie-server"
+  annotations: {}
+  # eks.amazonaws.com/role-arn: <ARN>  # inject via --set at deploy time
+
+dcgm-exporter:
+  # AWS GPU nodes use taints, not the GCP accelerator label
+  nodeSelector: {}

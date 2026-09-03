@@ -1,0 +1,22 @@
+sie_id: gliner-community/gliner_large-v2.5
+hf_id: gliner-community/gliner_large-v2.5
+hf_revision: 3d6d1760be1c591069f85f207fced9214df8b15f
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode: null
+  score: null
+  extract: {}
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.gliner:GLiNERAdapter
+    adapter_options:
+      loadtime: {}
+      runtime:
+        # Empirically tuned for SIE CoNLL2003 F1 target 0.6518; GLiNER library default is 0.5.
+        threshold: 0.75

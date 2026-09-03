@@ -1,0 +1,78 @@
+{{- if .Values.autoscaling.enabled }}
+{{- /* Run the probe with the application in the effective workload namespace;
+  it needs network access to Prometheus but no Kubernetes API permissions. */ -}}
+{{- $promAddr := .Values.autoscaling.prometheusAddress }}
+{{- if index .Values "kube-prometheus-stack" "install" }}
+{{- $promAddr = include "sie-cluster.kubePrometheusStack.prometheusAddress" . }}
+{{- end }}
+{{- $targetLabels := printf `namespace="%s", service="%s-otel-collector", endpoint="prometheus"` (include "sie-cluster.namespace" .) (include "sie-cluster.fullname" .) -}}
+{{- $gatewayLabels := printf `%s, producer_service="sie-gateway"` $targetLabels -}}
+{{- $controlQuery := printf `(max(up{%s}) == 1) and on() (max(abs(time() - sie_gateway_capacity_snapshot_timestamp_seconds{%s}) < 20))` $targetLabels $gatewayLabels -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-health-prometheus-%d" (include "sie-cluster.fullname" .) .Release.Revision | trunc 63 | trimSuffix "-" }}
+  namespace: {{ include "sie-cluster.namespace" . }}
+  labels:
+    app.kubernetes.io/name: sie-health-test
+    app.kubernetes.io/component: prometheus
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    helm.sh/hook-weight: "1"
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 660
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sie-health-test
+        app.kubernetes.io/component: prometheus
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+        - name: test
+          image: {{ include "sie-cluster.keda.hookImage" . }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              PROMETHEUS_URL="{{ $promAddr }}"
+              CONTROL_QUERY='{{ $controlQuery }}'
+              TIMEOUT=600
+              INTERVAL=5
+              echo "=== Prometheus Readiness Test ==="
+              elapsed=0
+              while [ $elapsed -lt $TIMEOUT ]; do
+                response=$(wget -qO- --timeout=5 --post-data="query=$CONTROL_QUERY" "$PROMETHEUS_URL/api/v1/query" 2>/dev/null || echo "{}")
+                if printf '%s' "$response" | jq -e '
+                  .status == "success" and
+                  .data.resultType == "vector" and
+                  (.data.result | length) == 1 and
+                  (.data.result[0].value | length) == 2 and
+                  (.data.result[0].value[1] | type) == "string" and
+                  (.data.result[0].value[1] | test("^(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"))
+                ' >/dev/null; then
+                  echo "SUCCESS: Prometheus sees the release collector and fresh gateway capacity telemetry"
+                  exit 0
+                fi
+                echo "Waiting... (${elapsed}s/${TIMEOUT}s)"
+                sleep $INTERVAL
+                elapsed=$((elapsed + INTERVAL))
+              done
+              echo "FAILED: Prometheus did not observe the release collector and fresh gateway capacity telemetry within ${TIMEOUT}s"
+              exit 1
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+{{- end }}

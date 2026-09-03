@@ -1,0 +1,26 @@
+sie_id: microsoft/Florence-2-base-ft
+hf_id: microsoft/Florence-2-base-ft
+hf_revision: f6c1a25888ffc1d945ee8a1a77ac833c7303d46e
+inputs:
+  text: false
+  image: true
+  audio: false
+  video: false
+tasks:
+  encode: null
+  score: null
+  extract: {}
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: float16
+    adapter_path: sie_server.adapters.florence2:Florence2Adapter
+    adapter_options:
+      loadtime:
+        trust_remote_code: true
+      runtime:
+        # Re-tasked to object detection (#1347): Florence-2's flagship capability,
+        # measured on COCO. The shared adapter's <OD> branch emits pixel COCO boxes.
+        task: <OD>
+        max_new_tokens: 1024
+        num_beams: 1

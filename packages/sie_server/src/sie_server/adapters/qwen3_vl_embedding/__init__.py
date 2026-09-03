@@ -1,0 +1,505 @@
+from __future__ import annotations
+
+import logging
+import unicodedata
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar
+
+import numpy as np
+import torch
+from torch.nn import functional as F
+
+from sie_server.adapters._base_adapter import BaseAdapter
+from sie_server.adapters._spec import AdapterSpec
+from sie_server.adapters._types import ERR_NOT_LOADED, ComputePrecision
+from sie_server.adapters._vision_patch_embed import rebind_vision_patch_embed
+from sie_server.core.inference_output import EncodeOutput
+from sie_server.core.video_frames import extract_frames
+from sie_server.types.inputs import decode_image
+
+if TYPE_CHECKING:
+    from PIL import Image
+    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+    from sie_server.types.inputs import Item
+
+logger = logging.getLogger(__name__)
+
+_ERR_NO_INPUT = "Qwen3VLEmbeddingAdapter requires either text, images, or video input"
+
+# Default system prompt used by Qwen3-VL-Embedding for instruction-aware retrieval.
+_DEFAULT_INSTRUCTION = "Represent the user's input."
+
+_SUPPORTED_POOLING = ("last", "mean")
+
+
+def _normalize_instruction(instruction: str) -> str:
+    """Match the official Qwen3-VL-Embedding ``format_model_input`` instruction shaping.
+
+    The reference recipe strips the instruction and appends a period unless it
+    already ends in a Unicode punctuation character::
+
+        instruction = instruction.strip()
+        if not unicodedata.category(instruction[-1]).startswith("P"):
+            instruction += "."
+
+    SIE previously passed the resolved instruction verbatim, so MTEB query
+    instructions without trailing punctuation (e.g. FiQA's "...best answer the
+    question") differed from the official prompt by a missing period token on
+    every query.
+    """
+    inst = instruction.strip()
+    if inst and not unicodedata.category(inst[-1]).startswith("P"):
+        inst += "."
+    return inst
+
+
+def _build_conversation(
+    *,
+    text: str | None = None,
+    images: list[Image.Image] | None = None,
+    video_frames: list[Image.Image] | None = None,
+    instruction: str = _DEFAULT_INSTRUCTION,
+) -> list[dict[str, Any]]:
+    """Build a chat conversation in the Qwen3-VL format.
+
+    The model expects:
+      system: <instruction>
+      user: [optional images/video frames] <text>
+    """
+    content: list[dict[str, Any]] = []
+    if images:
+        for img in images:
+            content.append({"type": "image", "image": img})
+    if video_frames:
+        for frame in video_frames:
+            content.append({"type": "image", "image": frame})
+    if text:
+        content.append({"type": "text", "text": text})
+    if not content:
+        content.append({"type": "text", "text": ""})
+
+    return [
+        {"role": "system", "content": [{"type": "text", "text": instruction}]},
+        {"role": "user", "content": content},
+    ]
+
+
+class Qwen3VLEmbeddingAdapter(BaseAdapter):
+    """Adapter for Qwen3-VL-Embedding multimodal embedding models.
+
+    Qwen3-VL-Embedding-2B uses the Qwen3-VL architecture to produce dense
+    embeddings from text, images, or mixed inputs in a shared vector space.
+
+    Key features:
+    - 2048-dim dense embeddings (MRL: supports 64-2048 via truncation)
+    - Chat-template-based instruction-aware encoding
+    - Last-token and mean pooling from the causal decoder
+    - Text + image + video inputs (video encoded as extracted frames)
+    - Apache 2.0 license, 2B parameters, fits L4 with headroom
+
+    Target models:
+    - Qwen/Qwen3-VL-Embedding-2B
+    - Qwen/Qwen3-VL-Embedding-8B (future)
+    """
+
+    spec: ClassVar[AdapterSpec] = AdapterSpec(
+        inputs=("text", "image", "video"),
+        outputs=("dense",),
+        dense_dim=2048,
+        unload_fields=("_model", "_processor", "_dense_dim"),
+        default_preprocessor="image",
+    )
+
+    def __init__(
+        self,
+        model_name_or_path: str | Path,
+        *,
+        normalize: bool = True,
+        compute_precision: ComputePrecision = "bfloat16",
+        trust_remote_code: bool = False,
+        revision: str | None = None,
+        max_seq_length: int | None = None,
+        pooling: str = "last",
+        default_instruction: str = _DEFAULT_INSTRUCTION,
+        dense_dim: int | None = None,
+    ) -> None:
+        if pooling not in _SUPPORTED_POOLING:
+            msg = f"Unsupported pooling '{pooling}', must be one of {_SUPPORTED_POOLING}"
+            raise ValueError(msg)
+
+        self._model_name_or_path = str(model_name_or_path)
+        self._normalize = normalize
+        self._compute_precision = compute_precision
+        self._trust_remote_code = trust_remote_code
+        self._revision = revision
+        self._max_seq_length = max_seq_length
+        self._pooling = pooling
+        self._default_instruction = default_instruction
+        self._configured_dense_dim = dense_dim
+
+        self._model: Qwen3VLForConditionalGeneration | None = None
+        self._processor: AutoProcessor | None = None
+        self._device: str | None = None
+        self._dense_dim: int | None = dense_dim or 2048
+
+    def load(self, device: str) -> None:
+        from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+        self._device = device
+        dtype = self._resolve_dtype()
+        attn_impl = self._resolve_attn_implementation(device)
+
+        logger.info(
+            "Loading Qwen3-VL-Embedding %s on device=%s dtype=%s attn=%s pooling=%s max_seq_length=%s",
+            self._model_name_or_path,
+            device,
+            dtype,
+            attn_impl,
+            self._pooling,
+            self._max_seq_length,
+        )
+
+        proc_kwargs: dict[str, Any] = {
+            "trust_remote_code": self._trust_remote_code,
+            "min_pixels": 256 * 28 * 28,
+            "max_pixels": 1280 * 28 * 28,
+        }
+        if self._revision is not None:
+            proc_kwargs["revision"] = self._revision
+        self._processor = AutoProcessor.from_pretrained(
+            self._model_name_or_path,
+            **proc_kwargs,
+        )
+        if self._max_seq_length is not None and hasattr(self._processor, "tokenizer"):
+            self._processor.tokenizer.model_max_length = self._max_seq_length  # ty: ignore[unresolved-attribute]
+
+        load_kwargs: dict[str, Any] = {
+            "torch_dtype": dtype,
+            "device_map": device,
+            "trust_remote_code": self._trust_remote_code,
+        }
+        if attn_impl is not None:
+            load_kwargs["attn_implementation"] = attn_impl
+        if self._revision is not None:
+            load_kwargs["revision"] = self._revision
+
+        self._model = Qwen3VLForConditionalGeneration.from_pretrained(
+            self._model_name_or_path,
+            **load_kwargs,
+        )
+        self._model.eval()
+
+        # Qwen3VLConfig stores the text model hidden size under text_config
+        cfg = self._model.config
+        if hasattr(cfg, "hidden_size"):
+            self._dense_dim = self._validate_or_set_dense_dim(cfg.hidden_size)
+        elif hasattr(cfg, "text_config") and hasattr(cfg.text_config, "hidden_size"):
+            self._dense_dim = self._validate_or_set_dense_dim(cfg.text_config.hidden_size)
+        else:
+            logger.warning("Could not determine hidden_size from config, defaulting to 2048")
+            self._dense_dim = self._validate_or_set_dense_dim(2048)
+
+        # FIX[#1151]: rebind the Qwen3-VL vision Conv3d patch-embed to its matmul
+        # equivalent (same weights). The non-overlapping per-patch Conv3d hits a
+        # pathologically slow cuDNN path that dominates the vision-tower forward.
+        rebind_vision_patch_embed(self._model, "qwen3_vl_embedding")
+
+    def _validate_or_set_dense_dim(self, observed_dim: int) -> int:
+        """Validate observed model width against configured dense_dim."""
+        if self._configured_dense_dim is not None and observed_dim != self._configured_dense_dim:
+            msg = (
+                "Qwen3-VL embedding dimension mismatch: "
+                f"configured dense_dim={self._configured_dense_dim}, model hidden_size={observed_dim}"
+            )
+            raise ValueError(msg)
+        return observed_dim
+
+    def _resolve_dtype(self) -> torch.dtype:
+        if not self._device or not str(self._device).startswith("cuda"):
+            return torch.float32
+        dtype_map = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }
+        return dtype_map.get(self._compute_precision, torch.bfloat16)
+
+    def _resolve_attn_implementation(self, device: str) -> str | None:
+        if not device.startswith("cuda"):
+            return None
+        try:
+            import flash_attn  # ty: ignore[unresolved-import]
+
+            return "flash_attention_2"
+        except (ImportError, RuntimeError) as exc:
+            logger.info("flash_attn not available (%s), using sdpa attention", exc)
+            return "sdpa"
+
+    # ------------------------------------------------------------------
+    # Encode
+    # ------------------------------------------------------------------
+
+    def encode(
+        self,
+        items: list[Item],
+        output_types: list[str],
+        *,
+        instruction: str | None = None,
+        is_query: bool = False,
+        prepared_items: Any = None,
+        options: dict[str, Any] | None = None,
+    ) -> EncodeOutput:
+        self._check_loaded()
+        assert self._model is not None
+        assert self._processor is not None
+
+        # Blank/whitespace-only/None all coalesce to the default; a meaningful
+        # instruction is normalized. Avoids forwarding an empty system turn.
+        inst = _normalize_instruction(instruction or "") or _normalize_instruction(self._default_instruction)
+
+        embeddings_list: list[np.ndarray] = []
+        # Worker-authoritative §7 "$ per image" counts: submitted images plus
+        # the video frames this call actually sampled and fed to the model.
+        # Travels on ``extra`` (like ``input_token_counts``) so the count is
+        # bound to THIS batch rather than re-derived from the wire item, which
+        # cannot know how many frames a video decoded to.
+        image_counts: list[int] = []
+        for item in items:
+            emb, images_processed = self._encode_single_item(item, instruction=inst)
+            embeddings_list.append(emb)
+            image_counts.append(images_processed)
+
+        # Free GPU memory once after the full batch rather than per item
+        if self._device and self._device.startswith("cuda"):
+            torch.cuda.empty_cache()
+
+        dense_batch = np.stack(embeddings_list, axis=0)
+
+        return EncodeOutput(
+            dense=dense_batch,
+            batch_size=len(items),
+            is_query=is_query,
+            dense_dim=self._dense_dim,
+            extra={"input_image_counts": image_counts},
+        )
+
+    def _encode_single_item(self, item: Any, *, instruction: str) -> tuple[np.ndarray, int]:
+        has_text = item.text is not None
+        has_images = item.images is not None and len(item.images) > 0
+        has_video = item.video is not None
+
+        if not has_text and not has_images and not has_video:
+            raise ValueError(_ERR_NO_INPUT)
+
+        # Load images (all of them, not just the first)
+        pil_images: list[Image.Image] | None = None
+        if has_images:
+            pil_images = self._load_images(item)
+
+        # Extract video frames as images. An undecodable video raises
+        # ``VideoDecodeError`` (typed INVALID_INPUT) — it is never dropped, so a
+        # text+video item can no longer return a billed text-only success that
+        # silently ignored the customer's video.
+        video_frames: list[Image.Image] | None = None
+        if has_video:
+            video_frames = self._extract_video_frames(item)
+
+        # If the input was visual-only but all images failed to load, reject
+        # rather than silently embedding an empty prompt.
+        has_loaded_visuals = bool(pil_images) or bool(video_frames)
+        if not has_text and not has_loaded_visuals:
+            msg = (
+                f"{_ERR_NO_INPUT}: item had visual inputs "
+                f"(images={len(item.images or [])}, video={'yes' if has_video else 'no'}) "
+                "but all failed to load"
+            )
+            raise ValueError(msg)
+
+        conversation = _build_conversation(
+            text=item.text,
+            images=pil_images,
+            video_frames=video_frames,
+            instruction=instruction,
+        )
+
+        # Billable images = exactly the visual content parts handed to the
+        # model: the images that LOADED plus the frames actually sampled from
+        # the video. Both halves are processed-based, so an unreadable image
+        # that ``_load_images`` dropped with a warning is not billed — the same
+        # rule the video half establishes. This can only ever be at or below
+        # the wire-derived ``count_input_images`` basis the gateway reserves
+        # against, so it cannot push a settled count over its ceiling.
+        images_processed = len(pil_images or []) + len(video_frames or [])
+        return self._forward_conversation(conversation), images_processed
+
+    def _forward_conversation(self, conversation: list[dict[str, Any]]) -> np.ndarray:
+        """Apply chat template, tokenize, run forward pass, extract embedding."""
+        assert self._model is not None
+        assert self._processor is not None
+
+        # Extract images from conversation for the processor
+        images = []
+        for msg in conversation:
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image":
+                        img = part.get("image")
+                        if img is not None:
+                            images.append(img)
+
+        # Tokenize with processor
+        proc_kwargs: dict[str, Any] = {
+            "return_tensors": "pt",
+            "padding": True,
+        }
+        if self._max_seq_length is not None:
+            proc_kwargs["truncation"] = True
+            proc_kwargs["max_length"] = self._max_seq_length
+        if images:
+            proc_kwargs["images"] = images
+
+        # Qwen's fast tokenizer mutates its padding/truncation configuration
+        # per call and is not re-entrant. The direct EncodePipeline path runs
+        # concurrent requests through asyncio.to_thread against this shared
+        # processor, so keep chat-template and processor tokenization under
+        # the adapter-wide tokenizer guard.
+        with self._tokenizer_guard():
+            prompt = self._processor.apply_chat_template(  # ty: ignore[unresolved-attribute]
+                conversation,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            proc_kwargs["text"] = [prompt]
+            inputs = self._processor(**proc_kwargs)  # ty: ignore[call-non-callable]
+        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+
+        with torch.inference_mode():
+            # Pool the POST-final-RMSNorm tensor, matching the official
+            # Qwen3VLForEmbedding recipe (method_output_name='last_hidden_state').
+            # Calling the CausalLM wrapper with output_hidden_states=True returns
+            # per-decoder-layer hidden states that are PRE-norm (the post-norm tie
+            # only fires on the base model's `last_hidden_state`, which the CausalLM
+            # output object does not expose). `self._model.model` is the base
+            # Qwen3VLModel whose forward applies the final RMSNorm and returns the
+            # post-norm `last_hidden_state`.
+            outputs = self._model.model(**inputs, return_dict=True)
+
+        last_hidden = outputs.last_hidden_state  # (1, seq_len, hidden_dim), post-RMSNorm
+        mask = inputs.get("attention_mask")
+
+        if self._pooling == "mean":
+            embedding = self._mean_pool(last_hidden, mask)
+        else:
+            # Default: last-token pooling
+            embedding = self._last_token_pool(last_hidden, mask)
+
+        # Normalize
+        if self._normalize:
+            embedding = F.normalize(embedding.unsqueeze(0), p=2, dim=-1).squeeze(0)
+
+        result = embedding.float().cpu().numpy()
+
+        # Free intermediate tensors (batch-level empty_cache is in encode())
+        del outputs, inputs, last_hidden
+
+        return result
+
+    @staticmethod
+    def _last_token_pool(last_hidden: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+        if mask is not None:
+            seq_lengths = mask.sum(dim=1) - 1  # (batch,)
+            return last_hidden[0, int(seq_lengths[0].item())]
+        return last_hidden[0, -1]
+
+    @staticmethod
+    def _mean_pool(last_hidden: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+        if mask is not None:
+            mask_expanded = mask.unsqueeze(-1).float()
+            summed = (last_hidden * mask_expanded).sum(dim=1)
+            counts = mask_expanded.sum(dim=1).clamp(min=1e-9)
+            return (summed / counts).squeeze(0)
+        return last_hidden.mean(dim=1).squeeze(0)
+
+    # ------------------------------------------------------------------
+    # Image / video loading
+    # ------------------------------------------------------------------
+
+    def _load_images(self, item: Any) -> list[Image.Image]:
+        # decode_image raises InvalidMediaError (-> 400 INVALID_INPUT) on
+        # non-bytes or undecodable payloads, and converts to RGB. Faulting
+        # matches the video half (an undecodable video raises VideoDecodeError)
+        # instead of silently embedding without the image the caller sent.
+        return [decode_image(img_input, image_index=j) for j, img_input in enumerate(item.images or [])]
+
+    def _extract_video_frames(self, item: Any) -> list[Image.Image]:
+        """Sample frames from the item's video, as image content parts.
+
+        Delegates to the shared :mod:`sie_server.core.video_frames` seam, which
+        owns real mp4/webm decoding, the admission caps, and the
+        :data:`~sie_server.core.video_frames.MAX_SAMPLED_FRAMES` budget the
+        managed reservation ceiling is derived from.
+
+        Raises:
+            VideoDecodeError: The video is undecodable or violates a cap. Never
+                returns an empty list for a present video — that would bill a
+                success for input the model never saw.
+        """
+        video_input = item.video
+        if video_input is None:
+            return []
+        return extract_frames(video_input)
+
+    def count_input_tokens(self, items: list[Item]) -> list[int] | None:
+        """Per-item text-token counts that survive a MIXED batch.
+
+        The base hook is all-or-nothing: one non-text item and it returns
+        ``None`` for the whole batch. That is fine for a text-only encoder, but
+        this adapter accepts text, images and video, and the queue seam fuses
+        items from different API requests — so a text item co-batched with a
+        video item lost its token count, ``_encode_units`` then yielded no
+        units at all, and the gateway faulted the dispatch ("succeeded without
+        authoritative units") after the GPU was already spent.
+
+        Scatter instead, exactly like ``siglip``: real counts for the items
+        that carry text, ``0`` for the visual-only ones. ``_encode_units``
+        drops a zero rather than reporting it, so a visual-only item still
+        settles on ``images`` alone and the plan/terminal dimensions agree.
+
+        Counts the item's TEXT only — the image placeholder tokens the chat
+        template expands are visual input and bill through ``images``; counting
+        them here would charge the same content on two dimensions.
+        """
+        tokenizer = self._metering_tokenizer()
+        if tokenizer is None:
+            return None
+        texts: list[str] = []
+        positions: list[int] = []
+        for index, item in enumerate(items):
+            text = getattr(item, "text", None)
+            if isinstance(text, str) and text:
+                texts.append(text)
+                positions.append(index)
+        counts = [0] * len(items)
+        if not texts:
+            return counts
+        with self._tokenizer_guard():
+            measured = self._token_counts_or_none(tokenizer, texts, expected_len=len(texts))
+        if measured is None:
+            return None
+        for position, count in zip(positions, measured, strict=True):
+            counts[position] = count
+        return counts
+
+    def get_preprocessor(self) -> Any:
+        # Qwen3-VL processor requires text alongside images (for chat template
+        # token insertion). The generic ImagePreprocessor calls processor(images=...)
+        # without text, which crashes Qwen3VLProcessor — so no image
+        # preprocessor; image batches reach the worker through the pipeline's
+        # passthrough path and the adapter handles the conversation template.
+        # The base CharCountPreprocessor (cost-only; the adapter still owns its
+        # own tokenization) is required so TEXT requests route through
+        # ModelWorker batching instead of the unbatched direct-call path
+        # (#2874).
+        return super().get_preprocessor()

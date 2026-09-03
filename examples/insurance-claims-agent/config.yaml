@@ -1,0 +1,36 @@
+cluster:
+  url: "http://localhost:8080"
+  generation_url: ""
+  api_key: ""
+  request_timeout_s: 900
+  provision_timeout_s: 900
+
+models:
+  parse: "docling"
+  extract: "fastino/gliner2-large-v1"
+  rerank: "Qwen/Qwen3-Reranker-4B"
+  review: "Qwen/Qwen3.6-27B"
+
+retrieval:
+  candidate_chunks: 16
+  result_chunks: 4
+  chunk_characters: 1800
+
+sources:
+  - slug: "nfip-appeal-b8"
+    title: "FEMA Flood Insurance Appeal Decision B8"
+    file_name: "nfip-appeal-b8.pdf"
+    media_type: "application/pdf"
+    url: "https://www.floodsmart.gov/sites/default/files/media/document/2022-12/B8_Direct%20Physical%20Loss_Proof%20of%20Loss_Overturn.pdf"
+    source_page: "https://www.floodsmart.gov/flood-claim-memos/appeal-issue/direct-physical-loss/proof-loss"
+    rights: "U.S. federal government work. Do not imply FEMA or DHS endorsement."
+    fixture_file: "fixtures/sources/nfip-appeal-b8.pdf"
+
+  - slug: "sfip-dwelling-policy"
+    title: "Standard Flood Insurance Policy, Dwelling Form"
+    file_name: "sfip-dwelling-policy.pdf"
+    media_type: "application/pdf"
+    url: "https://www.fema.gov/sites/default/files/documents/fema_F-122-Dwelling-SFIP_2021.pdf"
+    source_page: "https://www.fema.gov/flood-insurance/find-form/underwriting"
+    rights: "U.S. federal government work. Do not imply FEMA or DHS endorsement."
+    fixture_file: "fixtures/sources/sfip-dwelling-policy.pdf"

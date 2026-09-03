@@ -1,0 +1,269 @@
+{
+  "created_at": "2026-08-09T22:39:59.037790+00:00",
+  "endpoint": "https://api.superlinked.com",
+  "models": {
+    "parse": "docling",
+    "retrieve": "BAAI/bge-m3",
+    "rerank": "Qwen/Qwen3-Reranker-4B",
+    "entities": "urchade/gliner_multi-v2.1",
+    "extract": "fastino/gliner2-large-v1"
+  },
+  "fixture": {
+    "path": "fixtures/cms-l1851-insufficient-documentation.html",
+    "sha256": "aec2408ff0e00b9960bf9e7879a7213942d32e8980da801a2c71acef4755cf91"
+  },
+  "rate_book_provenance": {
+    "version": "2026-07-26-production-bootstrap-v2",
+    "source_artifacts": [
+      "raw/entities-case-0.json",
+      "raw/entities-case-1.json",
+      "raw/entities-case-2.json",
+      "raw/entities-case-3.json",
+      "raw/entities-case-4.json",
+      "raw/entities-requirement-0.json",
+      "raw/gliner2-outcome.json",
+      "raw/gliner2-requirements.json",
+      "raw/gliner2-submission.json",
+      "raw/rerank.json",
+      "raw/retrieve.json"
+    ],
+    "request_ids": [
+      "019fe8ae-cb93-76c1-a002-61865cdc150a",
+      "019fe8ae-cc66-7c30-99ff-1be213f92617",
+      "019fe8ae-cd46-7eb2-b973-3629be2b7238",
+      "019fe8ae-ce14-7c10-a1d0-7246e1e84bdb",
+      "019fe8ae-cef4-77c3-816b-0e1a1f755960",
+      "019fe8ae-cab6-74a3-90f4-7697b2b69a8e",
+      "019fe8ae-d19f-7160-9d01-b0e62fa8dd18",
+      "019fe8ae-cfcc-7540-bb3b-0a7ac5aecc43",
+      "019fe8ae-d0b3-72f3-b9c4-a69d8ac6040e",
+      "019fe8ae-c909-7a13-a7f5-c912a97f62fb",
+      "019fe8ae-c07a-78a2-9976-7ada45b03c93",
+      "019fe8ae-c13f-7010-bf31-73dad483411c",
+      "019fe8ae-c1ee-7af3-a69d-86ec0f5b6750",
+      "019fe8ae-c2a9-7c12-990b-24f58845ff85",
+      "019fe8ae-c356-7a70-9386-c43b2ca4d064",
+      "019fe8ae-c411-7270-bc0b-087bb80d62f6",
+      "019fe8ae-c4ba-74d3-866a-3c98b780c7ec",
+      "019fe8ae-c572-7171-a5cd-586d4ca32bc9",
+      "019fe8ae-c623-73a0-9cb3-29d240dcaa34",
+      "019fe8ae-c6e2-7200-b207-79879ea49243",
+      "019fe8ae-c799-7af3-96ad-841eae76c210",
+      "019fe8ae-c849-7ad3-a775-a1684a5029db"
+    ],
+    "request_versions": {
+      "019fe8ae-cb93-76c1-a002-61865cdc150a": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-cc66-7c30-99ff-1be213f92617": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-cd46-7eb2-b973-3629be2b7238": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-ce14-7c10-a1d0-7246e1e84bdb": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-cef4-77c3-816b-0e1a1f755960": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-cab6-74a3-90f4-7697b2b69a8e": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-d19f-7160-9d01-b0e62fa8dd18": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-cfcc-7540-bb3b-0a7ac5aecc43": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-d0b3-72f3-b9c4-a69d8ac6040e": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c909-7a13-a7f5-c912a97f62fb": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c07a-78a2-9976-7ada45b03c93": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c13f-7010-bf31-73dad483411c": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c1ee-7af3-a69d-86ec0f5b6750": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c2a9-7c12-990b-24f58845ff85": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c356-7a70-9386-c43b2ca4d064": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c411-7270-bc0b-087bb80d62f6": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c4ba-74d3-866a-3c98b780c7ec": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c572-7171-a5cd-586d4ca32bc9": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c623-73a0-9cb3-29d240dcaa34": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c6e2-7200-b207-79879ea49243": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c799-7af3-96ad-841eae76c210": "2026-07-26-production-bootstrap-v2",
+      "019fe8ae-c849-7ad3-a775-a1684a5029db": "2026-07-26-production-bootstrap-v2"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "evaluation.json",
+      "sha256": "ec159b7ec6bd1e3c310699501f8c9eb0af546818cc6e0c1b6b19d01f3a04ad3d"
+    },
+    {
+      "path": "parsed.md",
+      "sha256": "918cd788c0e8736afa5d6a2745fd09617738260ad7b1c2321539a1c36529adb4"
+    },
+    {
+      "path": "raw/entities-case-0.json",
+      "sha256": "c6781416470c28e0c119ef561d31ee6c3b0863af26dec9d9edfecf6f2a20fe07"
+    },
+    {
+      "path": "raw/entities-case-1.json",
+      "sha256": "53b0ee84ca07c8cb065bf806fa7ccc5462332520937e2a82ea2ac59cdfb3e1be"
+    },
+    {
+      "path": "raw/entities-case-2.json",
+      "sha256": "42953cdd9a8d60c7c7ab30d707b3c76e1c23cfb96996d43e8992c92ea72a907a"
+    },
+    {
+      "path": "raw/entities-case-3.json",
+      "sha256": "72e2136c207ca220bc4a2db2a062bb32454770783d2a095a092dbd6d55cc0190"
+    },
+    {
+      "path": "raw/entities-case-4.json",
+      "sha256": "90e08a37525b1039c6f7a2e279ba4967dbb7ee48a2177acc06625b5cc953f7d3"
+    },
+    {
+      "path": "raw/entities-requirement-0.json",
+      "sha256": "c570d1f63188940b724fed1ccf86334c6c230277d999cb1f73298f4b14d6e0f7"
+    },
+    {
+      "path": "raw/entities.json",
+      "sha256": "f8022cf263c93c00dfbc976d88718f07eaf742faa62600d3d6fcaa6e990472cf"
+    },
+    {
+      "path": "raw/gliner2-outcome.json",
+      "sha256": "414ad2e68bebca5f9be9accb2f27ef0da26340b214404fa1414e68ef2717146a"
+    },
+    {
+      "path": "raw/gliner2-requirements.json",
+      "sha256": "0b96f010e77c5cb6864cf3a39cc5228119188ddde6ee9b0080fb03a256383593"
+    },
+    {
+      "path": "raw/gliner2-submission.json",
+      "sha256": "3b20a79d81ca9a153ded895d03dfb8bdfdbed050b40f6d50fef5c4e544307edc"
+    },
+    {
+      "path": "raw/mapped.json",
+      "sha256": "05e9962150bafe564ccece4600ddd8b4560acf967a19bc0f55073f77503c4b85"
+    },
+    {
+      "path": "raw/parse.json",
+      "sha256": "3e5e37536b9d0e49ec8064863eebb1bcb6588d9304bbda4984bb972f744afac5"
+    },
+    {
+      "path": "raw/rerank-request.json",
+      "sha256": "071117cd0e5212499f6fc20c30f4fe61869ec43c4d06454f4cb5ed2dfb743c8d"
+    },
+    {
+      "path": "raw/rerank.json",
+      "sha256": "e6a55f114d2315a9b502878255cfb885256403a96d2405e9f8f7fd96baf1eb81"
+    },
+    {
+      "path": "raw/retrieve.json",
+      "sha256": "28e3ca0bd10305f9045a66b6f5404dfe2c13c27724c3905af2ae3bf87afe11f8"
+    },
+    {
+      "path": "review.json",
+      "sha256": "ace1b0c75e330c83b292f70a388a3399457edfc7b36eabedb1ebb2ed9fb57c69"
+    }
+  ],
+  "source": {
+    "publisher": "Centers for Medicare & Medicaid Services",
+    "title": "Lower Limb Orthoses",
+    "url": "https://www.cms.gov/training-education/medicare-learning-networkr-mln/compliance/medicare-provider-compliance-tips/lower-limb-orthoses",
+    "page_last_modified": "2026-02-11"
+  },
+  "calls": [
+    {
+      "stage": "parse",
+      "model": "docling",
+      "configured_model": "docling",
+      "latency_ms": 342.6
+    },
+    {
+      "stage": "retrieve",
+      "model": "BAAI/bge-m3",
+      "latency_ms": 2190.6
+    },
+    {
+      "stage": "rerank",
+      "model": "Qwen/Qwen3-Reranker-4B",
+      "latency_ms": 433.7
+    },
+    {
+      "stage": "entities_requirement_0",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 209.9
+    },
+    {
+      "stage": "entities_case_0",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 208.1
+    },
+    {
+      "stage": "entities_case_1",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 223.8
+    },
+    {
+      "stage": "entities_case_2",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 210.0
+    },
+    {
+      "stage": "entities_case_3",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 224.5
+    },
+    {
+      "stage": "entities_case_4",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 220.0
+    },
+    {
+      "stage": "gliner2_requirements",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 220.2,
+      "source_chunk_ids": [
+        "chunk-2"
+      ],
+      "source_sha256": "265596236fcf3915a13ad19f5dd77510f4dfbc4420e247a53c27264b8c01deba",
+      "source_fragment_sha256": {
+        "authorization_requirement_text": "cadcff3f63a5a778d6202dbb1714b06ef62dde0c6922626758a63bce6a795971",
+        "face_to_face_requirement_text": "cadcff3f63a5a778d6202dbb1714b06ef62dde0c6922626758a63bce6a795971",
+        "written_order_requirement_text": "cadcff3f63a5a778d6202dbb1714b06ef62dde0c6922626758a63bce6a795971",
+        "face_to_face_window_text": "19a4544d06404af9e8a66fb0446b572bc8a96330edf46a179f3a28388671dbfa"
+      }
+    },
+    {
+      "stage": "gliner2_submission",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 244.1,
+      "source_chunk_ids": [
+        "chunk-4",
+        "chunk-5",
+        "chunk-6",
+        "chunk-7"
+      ],
+      "source_sha256": "04f3867101459e32634db86d8544769b47401fba268fcef222fcccf5d0a2d94d",
+      "source_fragment_sha256": {
+        "hcpcs_code": "9a893928eede6acd46e1f8029609142962206042b4ceb88d901e159e1518e3bf",
+        "submitted_order": "c1865491ea7917e6f48951997f384e73385781a08a63e07eaafd42c4afda2718",
+        "submitted_medical_record": "25ad16851d4271981f91a66ae07a096b13f8d2ea8982523c55cf2ffb6c61c355",
+        "submitted_proof_of_delivery": "02ea6561a2f2593960d9b67bc0c32a73dde6d1ea65bb32c91a77c33169335ed7",
+        "documented_face_to_face_age": "02ea6561a2f2593960d9b67bc0c32a73dde6d1ea65bb32c91a77c33169335ed7"
+      }
+    },
+    {
+      "stage": "gliner2_outcome",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 223.0,
+      "source_chunk_ids": [
+        "chunk-9",
+        "chunk-10"
+      ],
+      "source_sha256": "f91fe9b5ccf451ef886f1014dde5f3fd5eb24996a862de9f22ce3023b14e324f",
+      "source_fragment_sha256": {
+        "missing_documentation": "fb6503169e482f7076387a6f06abf2e86cb4382d03e2190ab67e5d244a3adce2",
+        "review_conclusion": "0ddc7dda57a2fcbf6b01a6f411888c1fa23404bc6d8a5c8c0f5b3276f025b89d",
+        "payment_action": "0ddc7dda57a2fcbf6b01a6f411888c1fa23404bc6d8a5c8c0f5b3276f025b89d"
+      }
+    }
+  ],
+  "pipeline": [
+    "parse",
+    "retrieve",
+    "rerank",
+    "entities_requirement",
+    "entities_case",
+    "gliner2_requirements",
+    "gliner2_submission",
+    "gliner2_outcome",
+    "deterministic_source_mapping",
+    "deterministic_validation"
+  ],
+  "decision_boundary": "This run reproduces one example published by CMS. It does not make a coverage, medical-necessity, diagnosis, treatment, or prospective payment decision."
+}

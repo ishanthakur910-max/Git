@@ -1,0 +1,296 @@
+{
+  "created_at": "2026-08-10T07:49:57.912879+00:00",
+  "endpoint": "https://api.superlinked.com",
+  "models": {
+    "parse": "docling",
+    "retrieve": "BAAI/bge-m3",
+    "rerank": "Qwen/Qwen3-Reranker-4B",
+    "entities": "urchade/gliner_multi-v2.1",
+    "extract": "fastino/gliner2-large-v1"
+  },
+  "rate_book_provenance": {
+    "version": "2026-08-09-production-bootstrap-v3",
+    "source_artifacts": [
+      "raw/entities-detector-0.json",
+      "raw/entities-detector-1.json",
+      "raw/entities-detector-2.json",
+      "raw/entities-outcome.json",
+      "raw/gliner2-cause.json",
+      "raw/gliner2-derailment.json",
+      "raw/gliner2-east-palestine.json",
+      "raw/gliner2-engineer.json",
+      "raw/gliner2-salem.json",
+      "raw/gliner2-sebring.json",
+      "raw/parse.json",
+      "raw/rerank.json",
+      "raw/retrieve.json"
+    ],
+    "request_ids": [
+      "019feaa5-d3fc-7891-8f96-297130dcdc9e",
+      "019feaa6-12b0-71e2-aa34-ea5121ba270d",
+      "019feaa6-144e-7f23-8e75-c927d83555a0",
+      "019feaa6-159f-7fa0-8673-62547fc3fa3c",
+      "019feaa6-55af-72c1-84ca-bdad9c2c7354",
+      "019feaa6-5775-7073-ab7c-11de1d34234b",
+      "019feaa6-54c5-7652-8f98-bd8fa6997d0e",
+      "019feaa6-5689-78c3-a28f-ecb002fd6e54",
+      "019feaa6-53de-7171-b845-4fa72bfea160",
+      "019feaa6-1832-7361-902a-f144e07186d3",
+      "019feaa5-3784-7820-82db-00751c51935b",
+      "019feaa5-9299-7252-8722-bf102afa04c7",
+      "019feaa5-787c-7300-abbe-7e536ba6a894",
+      "019feaa5-81bf-7a32-88ee-013ef66d9283",
+      "019feaa5-84d7-7100-ad9e-54de062cfb9a",
+      "019feaa5-85a8-7d80-a5d7-5a4e7bddce29",
+      "019feaa5-8671-79f2-aef3-f7007b3ae1bf",
+      "019feaa5-8743-74c1-bf78-0d2596a024c6",
+      "019feaa5-8805-7782-b54b-a218bc93d2ba",
+      "019feaa5-88d9-7d90-abd8-6397c738e4d5",
+      "019feaa5-89ae-7f40-93a0-a6c4765f0711",
+      "019feaa5-8a71-78c3-a0cf-55e8c3e8c78f",
+      "019feaa5-8b46-7bc0-8bf1-1622e5d6a3f7",
+      "019feaa5-8c12-70c2-901d-a8e32fabddda",
+      "019feaa5-8cdc-7360-bf7d-1be24c454842",
+      "019feaa5-8db1-7930-9a6d-89badec998f9",
+      "019feaa5-8e7d-7bb0-966d-ddbc714c1b79",
+      "019feaa5-8f51-7ef2-8156-3711a8f6270b",
+      "019feaa5-9018-7c03-bd1b-4c3fad8dfc1d",
+      "019feaa5-90e5-72d3-954a-5f70d825615f",
+      "019feaa5-91c4-72f3-95b8-2ce372016b10"
+    ],
+    "request_versions": {
+      "019feaa5-d3fc-7891-8f96-297130dcdc9e": "2026-08-09-production-bootstrap-v3",
+      "019feaa6-12b0-71e2-aa34-ea5121ba270d": "2026-08-09-production-bootstrap-v3",
+      "019feaa6-144e-7f23-8e75-c927d83555a0": "2026-08-09-production-bootstrap-v3",
+      "019feaa6-159f-7fa0-8673-62547fc3fa3c": "2026-08-09-production-bootstrap-v3",
+      "019feaa6-55af-72c1-84ca-bdad9c2c7354": "2026-08-09-production-bootstrap-v3",
+      "019feaa6-5775-7073-ab7c-11de1d34234b": "2026-08-09-production-bootstrap-v3",
+      "019feaa6-54c5-7652-8f98-bd8fa6997d0e": "2026-08-09-production-bootstrap-v3",
+      "019feaa6-5689-78c3-a28f-ecb002fd6e54": "2026-08-09-production-bootstrap-v3",
+      "019feaa6-53de-7171-b845-4fa72bfea160": "2026-08-09-production-bootstrap-v3",
+      "019feaa6-1832-7361-902a-f144e07186d3": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-3784-7820-82db-00751c51935b": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-9299-7252-8722-bf102afa04c7": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-787c-7300-abbe-7e536ba6a894": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-81bf-7a32-88ee-013ef66d9283": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-84d7-7100-ad9e-54de062cfb9a": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-85a8-7d80-a5d7-5a4e7bddce29": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-8671-79f2-aef3-f7007b3ae1bf": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-8743-74c1-bf78-0d2596a024c6": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-8805-7782-b54b-a218bc93d2ba": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-88d9-7d90-abd8-6397c738e4d5": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-89ae-7f40-93a0-a6c4765f0711": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-8a71-78c3-a0cf-55e8c3e8c78f": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-8b46-7bc0-8bf1-1622e5d6a3f7": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-8c12-70c2-901d-a8e32fabddda": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-8cdc-7360-bf7d-1be24c454842": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-8db1-7930-9a6d-89badec998f9": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-8e7d-7bb0-966d-ddbc714c1b79": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-8f51-7ef2-8156-3711a8f6270b": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-9018-7c03-bd1b-4c3fad8dfc1d": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-90e5-72d3-954a-5f70d825615f": "2026-08-09-production-bootstrap-v3",
+      "019feaa5-91c4-72f3-95b8-2ce372016b10": "2026-08-09-production-bootstrap-v3"
+    }
+  },
+  "fixture": {
+    "path": "fixtures/east-palestine-bearing-spread.pdf",
+    "sha256": "0556a971978198a493acda277dfdfd75a837be4ba5c626d6f03565cb17cee8ca"
+  },
+  "diagnostic_fixtures": [
+    {
+      "path": "fixtures/output-schema-probe-request.json",
+      "sha256": "d7678dd861df33f19e264af3253f5fe0a540db855c3ac31fcece8d2ccdf20907"
+    },
+    {
+      "path": "fixtures/output-schema-probe-response.json",
+      "sha256": "b68bfdcdda685b5474dbdc3a926f2327e6515a552fe6031a31d2d41c9ee71a3a"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "parsed.md",
+      "sha256": "893da4e76591881139272f831fae3a73f47d2998d8881abb16d6b7ae88a6e9b3"
+    },
+    {
+      "path": "review.json",
+      "sha256": "00e4c64be758531901c9ecadbd58c6cc83c2f4ecf95a9e75e762cce4f998b098"
+    },
+    {
+      "path": "raw/entities-detector-0.json",
+      "sha256": "84da7520ffc90560fe7bd171cee74875d323314a4df4d6eba775618a9581ec94"
+    },
+    {
+      "path": "raw/entities-detector-1.json",
+      "sha256": "7251ba39429b60014f55e4ba4ac206509f311f95149fa3194cb81bb61d0d0ea1"
+    },
+    {
+      "path": "raw/entities-detector-2.json",
+      "sha256": "5c3741e8a72fb794d9d80909604bd72ed35734647d1946fcbbef23c56de1281c"
+    },
+    {
+      "path": "raw/entities-outcome.json",
+      "sha256": "f7ab0f1935e955a6c3b66a7b0c132dac8c1fbbf64399d4ca5c231e031f6d0170"
+    },
+    {
+      "path": "raw/entities.json",
+      "sha256": "007960f40bb6065f6abf37c6840ae02deea02db34af5b19825ae7c4bd9f9cef5"
+    },
+    {
+      "path": "raw/gliner2-cause.json",
+      "sha256": "29b8ee94845a8514f5f8150d86ea2ebd2f35c0e8d04a4e76910d9e86d0dca04a"
+    },
+    {
+      "path": "raw/gliner2-derailment.json",
+      "sha256": "e82c6d2f5663958389d2796fa992db80aa4cdc4c283bc0e3cc9e601b1e800658"
+    },
+    {
+      "path": "raw/gliner2-east-palestine.json",
+      "sha256": "27c72ca3ffca188cf3af7dd4a43d6a2108936c6ac378c91891aa2f7d7cc2ee14"
+    },
+    {
+      "path": "raw/gliner2-engineer.json",
+      "sha256": "a911820b5729871710d385eb54da52e26cccb872e107edfa8aee84753c7ef6a5"
+    },
+    {
+      "path": "raw/gliner2-salem.json",
+      "sha256": "83382c151e80af09070f831104d3db7eab470df3b92985363225fc41299acfd9"
+    },
+    {
+      "path": "raw/gliner2-sebring.json",
+      "sha256": "766d60cf6d4c92ab2d010cb02653246918ee9d992b82c78837e3cbe9f2eca7b2"
+    },
+    {
+      "path": "raw/mapped.json",
+      "sha256": "62db67e24665c512043eb24fe9e878c3d56471c50b81763a851d761fe4ed55ca"
+    },
+    {
+      "path": "raw/parse.json",
+      "sha256": "017d997b1f7daba9e6b2d194f4dd03dc997a0263e5c224bf47ba40e0ea64de31"
+    },
+    {
+      "path": "raw/rerank-request.json",
+      "sha256": "a0fbb1f07e37cc7c48c5307bc5457450f5a071854c08cb8fb0da7412f6d59174"
+    },
+    {
+      "path": "raw/rerank.json",
+      "sha256": "c312fc84da3d14247b6c496d06b95ce2c29532d1e39a4c12caac9820ae9ea4d1"
+    },
+    {
+      "path": "raw/retrieve.json",
+      "sha256": "9b0740cc9d16a13616c74b3f13e48a9f1030b24e1db071cc0de6b881a4c74be9"
+    },
+    {
+      "path": "evaluation.json",
+      "sha256": "9acdbebde7ab95592a9c567399defd507a1076e45697a1344d49f7b4f9472cc6"
+    }
+  ],
+  "source_document": {
+    "url": "https://www.ntsb.gov/investigations/AccidentReports/Reports/SPC2406.pdf",
+    "source_page_index": 2,
+    "printed_pages": "4\u20135"
+  },
+  "calls": [
+    {
+      "stage": "parse",
+      "model": "docling",
+      "configured_model": "docling",
+      "latency_ms": 17161.9
+    },
+    {
+      "stage": "retrieve",
+      "model": "BAAI/bge-m3",
+      "latency_ms": 6678.3
+    },
+    {
+      "stage": "rerank",
+      "model": "Qwen/Qwen3-Reranker-4B",
+      "latency_ms": 16743.3
+    },
+    {
+      "stage": "entities_detector_0",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 16044.7
+    },
+    {
+      "stage": "entities_detector_1",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 389.6
+    },
+    {
+      "stage": "entities_detector_2",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 361.9
+    },
+    {
+      "stage": "entities_outcome",
+      "model": "urchade/gliner_multi-v2.1",
+      "latency_ms": 658.2
+    },
+    {
+      "stage": "gliner2_sebring",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 15275.0,
+      "source_chunk_ids": [
+        "chunk-11"
+      ],
+      "source_sha256": "152e2342c0b6d57c1cc619bda3976958dc467e1f83964fe8c055d313ccea502d"
+    },
+    {
+      "stage": "gliner2_salem",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 216.7,
+      "source_chunk_ids": [
+        "chunk-12"
+      ],
+      "source_sha256": "864d80e2d7aec89dcbdca6e30ef034f32f7be9f733c667394f6119e414496eac"
+    },
+    {
+      "stage": "gliner2_east_palestine",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 244.8,
+      "source_chunk_ids": [
+        "chunk-13"
+      ],
+      "source_sha256": "e78d51724d0ebbce9b68971491aff2b20d24bf0e2dca2f0c86a963e87c89c825"
+    },
+    {
+      "stage": "gliner2_cause",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 225.2,
+      "source_chunk_ids": [
+        "chunk-1"
+      ],
+      "source_sha256": "06acd274b771b3c61e4c7ebe8e7da561c28a58ac5963d85f503855e78d0b23df"
+    },
+    {
+      "stage": "gliner2_engineer",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 221.9,
+      "source_chunk_ids": [
+        "chunk-14"
+      ],
+      "source_sha256": "5c9b6299b2cb7ebb678aa0be97d6d2ab6fe7a4aa83b7752efc48d4e6db375d04"
+    },
+    {
+      "stage": "gliner2_derailment",
+      "model": "fastino/gliner2-large-v1",
+      "latency_ms": 242.5,
+      "source_chunk_ids": [
+        "chunk-15"
+      ],
+      "source_sha256": "54654ec0a72f7663349720e7124882792a6a36f8ece85a0e481db09348ff5026"
+    }
+  ],
+  "pipeline": [
+    "parse",
+    "retrieve",
+    "rerank",
+    "entities_detector_sections",
+    "entities_outcome",
+    "gliner2_detector_sections",
+    "gliner2_outcome_sections",
+    "deterministic_source_mapping",
+    "deterministic_validation"
+  ],
+  "decision_boundary": "The review reconstructs the NTSB's published detector sequence. It makes no new causal determination and performs no control write."
+}

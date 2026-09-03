@@ -1,0 +1,35 @@
+sie_id: ibm-granite/granite-embedding-97m-multilingual-r2
+hf_id: ibm-granite/granite-embedding-97m-multilingual-r2
+hf_revision: 835ad14087e140460703cf0fae09f97d469d65c2
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode:
+    dense:
+      dim: 384
+    sparse: null
+    multivector: null
+  score: null
+  extract: null
+max_sequence_length: 32768
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.modernbert_flash:ModernBERTFlashAdapter
+    adapter_options:
+      # Standard HF ModernBERT safetensors checkpoint, not an open_clip-format
+      # one: config.json claims architectures ["ModernBertModel"] / model_type
+      # "modernbert", so no open_clip backend loadtime options apply.
+      loadtime: {}
+      runtime:
+        # 1_Pooling/config.json claim: {"pooling_mode_cls_token": true}
+        pooling: cls
+        # modules.json claim: "type": "sentence_transformers.models.Normalize"
+        normalize: true
+        # No query/doc templates: config_sentence_transformers.json claim is
+        # {"prompts": {"query": "", "document": ""}} (both empty) and the
+        # evidence records default_prompt_name: null.

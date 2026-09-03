@@ -1,0 +1,21 @@
+sie_id: NeuML/gliner-bert-tiny
+hf_id: NeuML/gliner-bert-tiny
+hf_revision: 6d9e1fce43af8cab4ab13ff3a6a9762ebfd1a1cf
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode: null
+  score: null
+  extract: {}
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.gliner:GLiNERAdapter
+    adapter_options:
+      loadtime: {}
+      runtime:
+        merge_adjacent_entities: true

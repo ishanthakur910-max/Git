@@ -1,0 +1,23 @@
+sie_id: naver-clova-ix/donut-base-finetuned-cord-v2
+hf_id: naver-clova-ix/donut-base-finetuned-cord-v2
+hf_revision: 8003d433113256b4ce3a0f5bf604b29ff78a7451
+inputs:
+  text: false
+  image: true
+  audio: false
+  video: false
+tasks:
+  encode: null
+  score: null
+  extract: {}
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: float16
+    adapter_path: sie_server.adapters.donut:DonutAdapter
+    adapter_options:
+      loadtime: {}
+      runtime:
+        task: <s_cord-v2>
+        max_new_tokens: 512
+        num_beams: 1

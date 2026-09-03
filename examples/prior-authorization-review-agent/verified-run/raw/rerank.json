@@ -1,0 +1,77 @@
+{
+  "model": "Qwen/Qwen3-Reranker-4B",
+  "scores": [
+    {
+      "item_id": "chunk-10",
+      "score": 0.9765625,
+      "rank": 0
+    },
+    {
+      "item_id": "chunk-3",
+      "score": 0.8671875,
+      "rank": 1
+    },
+    {
+      "item_id": "chunk-9",
+      "score": 0.6796875,
+      "rank": 2
+    },
+    {
+      "item_id": "chunk-4",
+      "score": 0.65234375,
+      "rank": 3
+    },
+    {
+      "item_id": "chunk-2",
+      "score": 0.59375,
+      "rank": 4
+    },
+    {
+      "item_id": "chunk-8",
+      "score": 0.173828125,
+      "rank": 5
+    },
+    {
+      "item_id": "chunk-5",
+      "score": 0.1005859375,
+      "rank": 6
+    },
+    {
+      "item_id": "chunk-7",
+      "score": 0.0419921875,
+      "rank": 7
+    },
+    {
+      "item_id": "chunk-0",
+      "score": 0.004364013671875,
+      "rank": 8
+    },
+    {
+      "item_id": "chunk-1",
+      "score": 0.0023956298828125,
+      "rank": 9
+    },
+    {
+      "item_id": "chunk-6",
+      "score": 0.0012054443359375,
+      "rank": 10
+    }
+  ],
+  "usage": {
+    "input_tokens": 1434,
+    "credits_charged": 69,
+    "rate_book_version": "2026-07-26-production-bootstrap-v2"
+  },
+  "request": {
+    "id": "019fe8ae-c909-7a13-a7f5-c912a97f62fb",
+    "credits_debited": 69,
+    "rate_book_version": "2026-07-26-production-bootstrap-v2",
+    "usage": {
+      "input_tokens": 1434,
+      "pairs": 11,
+      "credits_charged": 69,
+      "rate_book_version": "2026-07-26-production-bootstrap-v2"
+    },
+    "execution_identity_sha256": "a61058c96cb7d88459f63949845a8b35aa0b258042898d6159adf80eff846963"
+  }
+}

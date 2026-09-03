@@ -1,0 +1,55 @@
+sie_id: answerdotai/answerai-colbert-small-v1
+hf_id: answerdotai/answerai-colbert-small-v1
+hf_revision: c72aa89bc61afdd85373643f3a1a75b2aad6e0fe
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode:
+    dense: null
+    sparse: null
+    multivector:
+      dim: 96
+  score: {}
+  extract: null
+max_sequence_length: 512
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.colbert:ColBERTAdapter
+    adapter_options:
+      loadtime:
+        muvera_config:
+          num_repetitions: 40
+          num_simhash_projections: 6
+          projection_dim: 8
+          final_projection_dim: null
+          # answerai tokens carry a dominant shared DC component (mean-token norm
+          # ~0.93) that tips SimHash into collapse on Blackwell (@muvera nDCG 0.0
+          # while @default MaxSim is healthy 0.57). Centering removes it and also
+          # improves FDE on healthy hardware (MPS 0.287 -> 0.379). See #1528.
+          center_tokens: true
+        token_dim: 96
+        normalize: true
+        query_max_length: 32
+        skip_special_tokens: false
+        doc_punctuation_skiplist: true
+        query_expansion: false
+        query_prefix: '[unused0]'
+        doc_prefix: '[unused1]'
+      runtime:
+        query_max_length: 32
+        muvera: null
+  muvera:
+    extends: default
+    adapter_options:
+      runtime:
+        query_max_length: 32
+        muvera: {}
+        output_types:
+        - dense
+        output_similarity:
+          dense: dot

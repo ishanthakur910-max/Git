@@ -1,0 +1,29 @@
+sie_id: microsoft/Florence-2-base
+hf_id: microsoft/Florence-2-base
+hf_revision: 5ca5edf5bd017b9919c05d08aebef5e4c7ac3bac
+inputs:
+  text: false
+  image: true
+  audio: false
+  video: false
+tasks:
+  encode: null
+  score: null
+  extract: {}
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: float16
+    adapter_path: sie_server.adapters.florence2:Florence2Adapter
+    adapter_options:
+      loadtime:
+        trust_remote_code: true
+      runtime:
+        # Default task is object detection: Florence-2-base is measured on COCO
+        # detection (its model-card metric, like Florence-2-base-ft / large; #1437).
+        # The same model is also used as an image OCR fallback — that call
+        # passes options={"task": "<OCR>"} explicitly, so one model serves both OD
+        # and OCR. This default only sets the no-task-specified behaviour.
+        task: <OD>
+        max_new_tokens: 1024
+        num_beams: 1

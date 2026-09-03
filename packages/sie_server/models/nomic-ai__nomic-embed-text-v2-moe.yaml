@@ -1,0 +1,47 @@
+sie_id: nomic-ai/nomic-embed-text-v2-moe
+hf_id: nomic-ai/nomic-embed-text-v2-moe
+hf_revision: 1066b6599d099fbb93dfcb64f9c37a7c9e503e85
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode:
+    dense:
+      dim: 768
+    sparse: null
+    multivector: null
+  score: null
+  extract: null
+max_sequence_length: 2048
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.nomic_flash:NomicFlashAdapter
+    adapter_options:
+      loadtime: {}
+      runtime:
+        pooling: mean
+        normalize: true
+        query_template: 'search_query: {text}'
+        doc_template: 'search_document: {text}'
+  # Vanilla-arm profile for the official_recipe playbook: the upstream MoE
+  # modeling ships as remote code (auto_map on the pinned hf_revision), which
+  # the native NomicFlashAdapter reimplements without it. The synthesized fp32
+  # ST arm stays trust_remote_code=false unless the model declares it, so the
+  # faithful upstream recipe is declared here (same mechanism as
+  # prithivida/Splade_PP_en_v2's sparse vanilla arm).
+  sentence_transformer:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.sentence_transformer:SentenceTransformerDenseAdapter
+    adapter_options:
+      loadtime:
+        trust_remote_code: true
+      runtime:
+        pooling: mean
+        normalize: true
+        query_template: 'search_query: {text}'
+        doc_template: 'search_document: {text}'

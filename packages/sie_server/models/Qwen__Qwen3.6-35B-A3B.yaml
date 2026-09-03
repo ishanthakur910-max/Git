@@ -1,0 +1,168 @@
+sie_id: Qwen/Qwen3.6-35B-A3B
+hf_id: Qwen/Qwen3.6-35B-A3B
+hf_revision: 995ad96eacd98c81ed38be0c5b274b04031597b0
+# Qwen3.6-35B-A3B is the Qwen3.5-compatible hybrid VLM/MoE architecture
+# (35B total / 3B active). Its 66.97 GiB BF16 checkpoint fits the existing
+# SGLang 0.5.10+ family adapter, but a single H100-80GB needs online FP8 weight
+# quantization to preserve activation and KV headroom.
+inputs:
+  text: true
+  image: true
+  audio: false
+  video: false
+tasks:
+  generate:
+    # Native context is 262,144 tokens. Keep the bare model on the established
+    # 8K Qwen3.6 contract and expose a conservative 32K opt-in profile below.
+    context_length: 8192
+    max_output_tokens: 4096
+    capabilities:
+      grammar: ["json_schema", "regex"]
+      streaming: true
+      tools: true
+    chat_template_kwargs:
+      enable_thinking: false
+max_sequence_length: 8192
+profiles:
+  # Correctness-first H100 FP8 bootstrap: no NEXTN and no CUDA graphs until
+  # the online-FP8 smoke validates the MoE kernels and memory envelope.
+  default:
+    max_batch_tokens: 16384
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.generation:SGLangGenerationAdapter
+    kv_budget_tokens: 8192
+    adapter_options:
+      loadtime:
+        mem_fraction_static: 0.90
+        served_model_name: Qwen/Qwen3.6-35B-A3B
+        disable_cuda_graph: true
+        attention_backend: triton
+        # Outlines fails at request time on this hybrid architecture because
+        # its backend lacks the vocabulary-mask API used by the scheduler.
+        grammar_backend: xgrammar
+        reasoning_parser: qwen3
+        tool_call_parser: qwen3_coder
+        speculative:
+          enabled: false
+        extra_launch_args:
+          - "--mm-process-config"
+          - '{"image":{"min_pixels":65536,"max_pixels":1003520}}'
+          - "--quantization"
+          - "fp8"
+      runtime:
+        first_chunk_timeout_s: 90
+        inter_chunk_timeout_s: 15
+        overall_timeout_s: 600
+        # Official Qwen3.6 non-thinking sampling recipe.
+        default_sampling:
+          temperature: 0.7
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 1.5
+        stop_tokens:
+          - "<|im_end|>"
+  # Caller-visible FP8 alias; select the H100-80GB machine profile separately.
+  h100-fp8:
+    extends: default
+  # Explicit reasoning mode uses the native-window H100 shape because Qwen's
+  # model card recommends at least 128K context for thinking. The shorter bare
+  # route remains an explicitly non-thinking compatibility surface.
+  thinking:
+    extends: long-context
+    max_output_tokens: 81920
+    chat_template_kwargs:
+      enable_thinking: true
+    adapter_options:
+      runtime:
+        first_chunk_timeout_s: 900
+        inter_chunk_timeout_s: 30
+        overall_timeout_s: 1800
+        default_sampling:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 20
+          presence_penalty: 1.5
+        stop_tokens:
+          - "<|im_end|>"
+  # Explicit native-window candidate for one H100-80GB admission. This is a
+  # standalone parent so the thinking twin can inherit the exact launch shape
+  # without profile chaining. Online FP8 limits weight memory; KV stays BF16
+  # unless measured H100 evidence requires a separately validated cache dtype.
+  long-context:
+    # Qwen's official non-thinking serving recipe uses max_tokens=32768.
+    # Keep the bare 8K profile at 4096 while exposing that decode ceiling only
+    # on variants whose total context can accommodate it.
+    max_output_tokens: 32768
+    max_batch_tokens: 262144
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.generation:SGLangGenerationAdapter
+    kv_budget_tokens: 262144
+    adapter_options:
+      loadtime:
+        max_seq_length: 262144
+        mem_fraction_static: 0.95
+        served_model_name: Qwen/Qwen3.6-35B-A3B
+        disable_cuda_graph: true
+        attention_backend: triton
+        grammar_backend: xgrammar
+        reasoning_parser: qwen3
+        tool_call_parser: qwen3_coder
+        speculative:
+          enabled: false
+        extra_launch_args:
+          - "--mm-process-config"
+          - '{"image":{"min_pixels":65536,"max_pixels":1003520}}'
+          - "--quantization"
+          - "fp8"
+      runtime:
+        first_chunk_timeout_s: 900
+        inter_chunk_timeout_s: 30
+        overall_timeout_s: 1800
+        default_sampling:
+          temperature: 0.7
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 1.5
+        stop_tokens:
+          - "<|im_end|>"
+  # Same measured 256K launch/admission envelope with Qwen thinking enabled.
+  long-context-thinking:
+    extends: long-context
+    # Official Qwen3.6 thinking examples use max_tokens=81920.
+    max_output_tokens: 81920
+    chat_template_kwargs:
+      enable_thinking: true
+    adapter_options:
+      runtime:
+        first_chunk_timeout_s: 900
+        inter_chunk_timeout_s: 30
+        overall_timeout_s: 1800
+        default_sampling:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 20
+          presence_penalty: 1.5
+        stop_tokens:
+          - "<|im_end|>"
+  # Hardware-explicit aliases for the exact H100-80GB native-window shape.
+  # Machine placement remains a separate gateway decision; these names make
+  # the validated context/GPU pairing discoverable to callers.
+  h100-256k:
+    extends: long-context
+  h100-256k-thinking:
+    extends: long-context
+    max_output_tokens: 81920
+    chat_template_kwargs:
+      enable_thinking: true
+    adapter_options:
+      runtime:
+        first_chunk_timeout_s: 900
+        inter_chunk_timeout_s: 30
+        overall_timeout_s: 1800
+        default_sampling:
+          temperature: 1.0
+          top_p: 0.95
+          top_k: 20
+          presence_penalty: 1.5
+        stop_tokens:
+          - "<|im_end|>"

@@ -1,0 +1,62 @@
+{
+  "name": "@superlinked/sie-langchain",
+  "version": "0.7.2",
+  "description": "SIE embeddings integration for LangChain.js",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src tests",
+    "lint-fix": "biome check --write src tests",
+    "prepack": "pnpm run build"
+  },
+  "dependencies": {
+    "@superlinked/sie-sdk": "workspace:*"
+  },
+  "peerDependencies": {
+    "@langchain/core": ">=0.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@langchain/core": "^0.3.80",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "keywords": [
+    "sie",
+    "embeddings",
+    "langchain",
+    "vector",
+    "search"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/superlinked/sie.git",
+    "directory": "integrations/sie_ts_langchain"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

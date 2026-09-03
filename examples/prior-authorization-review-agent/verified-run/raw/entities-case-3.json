@@ -1,0 +1,28 @@
+{
+  "entities": [
+    {
+      "text": "6 months",
+      "label": "time period",
+      "score": 0.8623046875,
+      "start": 61,
+      "end": 69,
+      "bbox": null
+    }
+  ],
+  "relations": [],
+  "classifications": [],
+  "objects": [],
+  "id": "cms-l1851-entities_case_3",
+  "model": "urchade/gliner_multi-v2.1",
+  "request": {
+    "id": "019fe8ae-ce14-7c10-a1d0-7246e1e84bdb",
+    "credits_debited": 1,
+    "rate_book_version": "2026-07-26-production-bootstrap-v2",
+    "usage": {
+      "input_tokens": 30,
+      "credits_charged": 1,
+      "rate_book_version": "2026-07-26-production-bootstrap-v2"
+    },
+    "execution_identity_sha256": "a61058c96cb7d88459f63949845a8b35aa0b258042898d6159adf80eff846963"
+  }
+}

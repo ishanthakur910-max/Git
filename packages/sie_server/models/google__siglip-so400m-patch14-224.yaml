@@ -1,0 +1,26 @@
+sie_id: google/siglip-so400m-patch14-224
+hf_id: google/siglip-so400m-patch14-224
+hf_revision: d04cf29fca7b6374f74d8bea1969314492266b5e
+inputs:
+  text: true
+  image: true
+  audio: false
+  video: false
+tasks:
+  encode:
+    dense:
+      dim: 1152
+    sparse: null
+    multivector: null
+  score: null
+  extract: null
+max_sequence_length: 16
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: float16
+    adapter_path: sie_server.adapters.siglip.adapter:SiglipAdapter
+    adapter_options:
+      loadtime: {}
+      runtime:
+        normalize: false

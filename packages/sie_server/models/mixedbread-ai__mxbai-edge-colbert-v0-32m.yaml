@@ -1,0 +1,52 @@
+sie_id: mixedbread-ai/mxbai-edge-colbert-v0-32m
+hf_id: mixedbread-ai/mxbai-edge-colbert-v0-32m
+hf_revision: 963e23afa1478d8bcc12e5d7115adcfdbd22c3af
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode:
+    dense: null
+    sparse: null
+    multivector:
+      dim: 64
+  score: {}
+  extract: null
+max_sequence_length: 8192
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.colbert_modernbert_flash.adapter:ColBERTModernBERTFlashAdapter
+    adapter_options:
+      loadtime:
+        muvera_config:
+          num_repetitions: 40
+          num_simhash_projections: 6
+          projection_dim: 8
+          final_projection_dim: null
+          center_tokens: true
+        token_dim: 64
+        normalize: true
+        query_max_length: 8192
+        skip_special_tokens: false
+        query_prefix: '[Q] '
+        doc_prefix: '[D] '
+        doc_punctuation_skiplist: true
+      runtime:
+        muvera: null
+        query_max_length: 48
+        max_seq_length: 512
+  muvera:
+    extends: default
+    adapter_options:
+      runtime:
+        muvera: {}
+        query_max_length: 48
+        max_seq_length: 512
+        output_types:
+        - dense
+        output_similarity:
+          dense: cosine

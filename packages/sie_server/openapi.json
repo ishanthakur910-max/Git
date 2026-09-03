@@ -1,0 +1,3950 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "SIE Server",
+    "description": "Search Inference Engine - GPU inference server for search workloads",
+    "version": "0.7.2"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Healthz",
+        "description": "Liveness probe.\n\nReturns 200 if the server process is alive and responding.\nUsed by Kubernetes to detect if the container needs to be restarted.\n\nReturns:\n    200 OK with \"ok\" body.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/livez": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Livez",
+        "description": "GPU-aware liveness probe.\n\nUnlike /healthz (process-alive only), this exercises the GPU with a tiny CUDA\nsync. A wedged CUDA context (``device-side assert``) is unrecoverable in\nPyTorch, so failing liveness lets the kubelet restart the pod \u2014 the only path\nback to a serving worker.\n\nIt deliberately does NOT consult the lifecycle ready flag, so graceful\nshutdown draining (when the worker marks itself not-ready) never trips a\nrestart. Wire this to the K8s ``livenessProbe`` with a tolerant\n``failureThreshold`` so a momentarily busy GPU is not mistaken for a wedge.\n\nReturns:\n    200 OK with \"ok\" body if the GPU can run a kernel (or this is a CPU\n    worker). 503 Service Unavailable with \"gpu unhealthy\" if wedged.",
+        "operationId": "livez_livez_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Readyz",
+        "description": "Readiness probe.\n\nReturns 200 if the server is ready to accept traffic.\nUsed by Kubernetes to determine if traffic should be routed to this pod.\n\nReadiness has two conditions:\n- Lifecycle state, managed by the lifespan handler: ready after startup\n  completes, not ready during shutdown (draining in-flight requests).\n- GPU health: a tiny CUDA sync confirms the device can still run kernels. A\n  wedged CUDA context (``device-side assert``) keeps returning sticky errors\n  from every inference while a process-alive check stays green, so without\n  this the gateway would keep routing to a dead worker.\n\nReturns:\n    200 OK with \"ok\" body if ready.\n    503 Service Unavailable if starting up / shutting down (\"not ready\") or\n    the GPU context is wedged (\"gpu unhealthy\").",
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/encode/{model}": {
+      "post": {
+        "tags": [
+          "encode"
+        ],
+        "summary": "Encode",
+        "description": "Generate embeddings for input items.\n\nSupports both msgpack and JSON request bodies (Content-Type header).\nReturns msgpack by default, JSON if Accept header requests it.\n\nArgs:\n    model: Model name to use for encoding.\n    http_request: FastAPI request object (for body and app state).\n    accept: Accept header for response content negotiation.\n    x_machine_profile: Machine profile header for routing validation.\n\nReturns:\n    EncodeResponse with embeddings for each input item.\n    Format depends on Accept header: msgpack (default) or JSON.\n\nRaises:\n    HTTPException: 400 for invalid input or profile mismatch, 404 if model not found,\n        503 if not loaded.",
+        "operationId": "encode_v1_encode__model__post",
+        "parameters": [
+          {
+            "name": "model",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model"
+            }
+          },
+          {
+            "name": "accept",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accept"
+            }
+          },
+          {
+            "name": "X-SIE-MACHINE-PROFILE",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sie-Machine-Profile"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Embeddings generated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EncodeResponseModel"
+                }
+              },
+              "application/msgpack": {}
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "502": {
+            "description": "Terminal model-load failure (MODEL_LOAD_FAILED). Carried in the ``detail`` envelope: ``{code, message, error_class, permanent, attempts}``. No ``Retry-After`` header \u2014 clients MUST NOT auto-retry."
+          },
+          "503": {
+            "description": "Model not loaded or service unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EncodeRequestModel"
+              }
+            },
+            "application/msgpack": {
+              "schema": {
+                "$ref": "#/components/schemas/EncodeRequestModel"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/extract/{model}": {
+      "post": {
+        "tags": [
+          "extract"
+        ],
+        "summary": "Extract",
+        "description": "Extract entities or structured data from items.\n\nSupports both msgpack and JSON request bodies (Content-Type header).\nReturns msgpack by default, JSON if Accept header requests it.\n\nArgs:\n    model: Model name to use for extraction.\n    http_request: FastAPI request object (for body and app state).\n    accept: Accept header for response content negotiation.\n    x_machine_profile: Machine profile header for routing validation.\n\nReturns:\n    ExtractResponse with extraction results for each item.\n    Format depends on Accept header: msgpack (default) or JSON.\n\nRaises:\n    HTTPException: 400 for invalid input or profile mismatch, 404 if model not found,\n        503 if not loaded.",
+        "operationId": "extract_v1_extract__model__post",
+        "parameters": [
+          {
+            "name": "model",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model"
+            }
+          },
+          {
+            "name": "accept",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accept"
+            }
+          },
+          {
+            "name": "X-SIE-MACHINE-PROFILE",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sie-Machine-Profile"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Extraction completed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractResponseModel"
+                }
+              },
+              "application/msgpack": {}
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "502": {
+            "description": "Terminal model-load failure (MODEL_LOAD_FAILED). Carried in the ``detail`` envelope: ``{code, message, error_class, permanent, attempts}``. No ``Retry-After`` header \u2014 clients MUST NOT auto-retry."
+          },
+          "503": {
+            "description": "Model not loaded or service unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExtractRequestModel"
+              }
+            },
+            "application/msgpack": {
+              "schema": {
+                "$ref": "#/components/schemas/ExtractRequestModel"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/generate/{model}": {
+      "post": {
+        "tags": [
+          "generate"
+        ],
+        "summary": "Generate",
+        "description": "Generate text from a prompt using the named model.\n\nThe ``model`` path segment uses the **SIE-safe** id (double-underscore\nseparator, e.g. ``Qwen__Qwen3-4B-Instruct``). HuggingFace-style slashes\nare rejected with 400 to keep parity with the gateway contract.",
+        "operationId": "generate_v1_generate__model__post",
+        "parameters": [
+          {
+            "name": "model",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model"
+            }
+          },
+          {
+            "name": "X-SIE-MACHINE-PROFILE",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sie-Machine-Profile"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generated text, or a Server-Sent Event stream when stream is true",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateResponseModel"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "SIE-native GenerateChunk events terminated by data: [DONE]"
+                },
+                "x-sie-event-schema": {
+                  "$ref": "#/components/schemas/GenerateChunk"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "413": {
+            "description": "Prompt exceeds the configured UTF-8 size limit (INPUT_TOO_LONG)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateInputTooLongErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Terminal model-load failure (MODEL_LOAD_FAILED). Carried in the detail envelope: {code, message, error_class, permanent, attempts}. No Retry-After header; clients must not auto-retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateModelLoadFailedErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Model loading or unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateRequestModel"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/score/{model}": {
+      "post": {
+        "tags": [
+          "score"
+        ],
+        "summary": "Score",
+        "description": "Score items against a query using a reranker model.\n\nSupports both msgpack and JSON request bodies (Content-Type header).\nReturns msgpack by default, JSON if Accept header requests it.\n\nArgs:\n    model: Model name to use for scoring.\n    http_request: FastAPI request object (for body and app state).\n    accept: Accept header for response content negotiation.\n    x_machine_profile: Machine profile header for routing validation.\n\nReturns:\n    ScoreResponse with scores sorted by relevance (descending).\n    Format depends on Accept header: msgpack (default) or JSON.\n\nRaises:\n    HTTPException: 400 for invalid input or profile mismatch, 404 if model not found,\n        503 if not loaded.",
+        "operationId": "score_v1_score__model__post",
+        "parameters": [
+          {
+            "name": "model",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model"
+            }
+          },
+          {
+            "name": "accept",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accept"
+            }
+          },
+          {
+            "name": "X-SIE-MACHINE-PROFILE",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sie-Machine-Profile"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Scores computed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoreResponseModel"
+                }
+              },
+              "application/msgpack": {}
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "502": {
+            "description": "Terminal model-load failure (MODEL_LOAD_FAILED). Carried in the ``detail`` envelope: ``{code, message, error_class, permanent, attempts}``. No ``Retry-After`` header \u2014 clients MUST NOT auto-retry."
+          },
+          "503": {
+            "description": "Model not loaded or service unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScoreRequestModel"
+              }
+            },
+            "application/msgpack": {
+              "schema": {
+                "$ref": "#/components/schemas/ScoreRequestModel"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "summary": "List Models",
+        "description": "List all available models.\n\nArgs:\n    http_request: FastAPI request object (for accessing app state).\n\nReturns:\n    List of all models with their info.",
+        "operationId": "list_models_v1_models_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models/{model}": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "summary": "Get Model",
+        "description": "Get details for a specific model.\n\nArgs:\n    model: Model name.\n    http_request: FastAPI request object (for accessing app state).\n\nReturns:\n    Model info.\n\nRaises:\n    HTTPException: 404 if model not found.",
+        "operationId": "get_model_v1_models__model__get",
+        "parameters": [
+          {
+            "name": "model",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Model"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelInfo"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/audio/transcriptions": {
+      "post": {
+        "tags": [
+          "openai-compat"
+        ],
+        "summary": "Create Transcription",
+        "description": "Transcribe a multipart audio upload through SIE's native extract path.",
+        "operationId": "create_transcription_v1_audio_transcriptions_post",
+        "parameters": [
+          {
+            "name": "X-SIE-MACHINE-PROFILE",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sie-Machine-Profile"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file",
+                  "model"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "language": {
+                    "type": "string"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  },
+                  "response_format": {
+                    "type": "string",
+                    "enum": [
+                      "json",
+                      "text",
+                      "srt",
+                      "verbose_json",
+                      "vtt"
+                    ],
+                    "default": "json"
+                  },
+                  "temperature": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "stream": {
+                    "type": "boolean",
+                    "enum": [
+                      false
+                    ],
+                    "default": false
+                  },
+                  "timestamp_granularities[]": {
+                    "type": "array",
+                    "maxItems": 2,
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "word",
+                        "segment"
+                      ]
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/embeddings": {
+      "post": {
+        "tags": [
+          "openai-compat"
+        ],
+        "summary": "Create Embeddings",
+        "description": "Create embeddings using OpenAI-compatible API.\n\nThis endpoint is compatible with OpenAI's /v1/embeddings API, allowing\ndrop-in replacement for any OpenAI SDK or client. Route-generated errors\nare emitted as top-level OpenAI ``{\"error\": {...}}`` envelopes, matching\n``/v1/completions``. The one exception is 422 request-body validation,\nwhich still returns FastAPI's ``HTTPValidationError`` ``{\"detail\": [...]}``\nshape (out of scope for this route's error handling; known residual).\n\nArgs:\n    request: OpenAI-format embedding request.\n    http_request: FastAPI request (for app state).\n    x_machine_profile: Machine profile header for routing validation.\n\nReturns:\n    OpenAI-format embedding response with embeddings and usage info.",
+        "operationId": "create_embeddings_v1_embeddings_post",
+        "parameters": [
+          {
+            "name": "X-SIE-MACHINE-PROFILE",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sie-Machine-Profile"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAIEmbeddingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Embeddings generated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIEmbeddingResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "502": {
+            "description": "Terminal model-load failure (MODEL_LOAD_FAILED). Carried in the top-level OpenAI ``error`` envelope, whose object adds the model-load extras ``error_class``, ``permanent``, and ``attempts`` to ``{message, type, param, code}``. No ``Retry-After`` header \u2014 clients MUST NOT auto-retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIEmbeddingsModelLoadFailedErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable (retryable). A cold model starts a background load and returns ``MODEL_LOADING`` with a ``Retry-After`` header immediately instead of blocking the request \u2014 clients should retry after the indicated delay. Also returned while unloading, on a full queue, and under transient resource exhaustion. The body is the top-level OpenAI ``error`` envelope.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying the MODEL_LOADING request.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIEmbeddingsErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/completions": {
+      "post": {
+        "tags": [
+          "openai-compat"
+        ],
+        "summary": "Completions",
+        "description": "Generate one raw-prompt OpenAI legacy completion.",
+        "operationId": "completions_v1_completions_post",
+        "parameters": [
+          {
+            "name": "X-SIE-MACHINE-PROFILE",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sie-Machine-Profile"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OpenAI text completion, or text_completion Server-Sent Events when stream is true",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAICompletionResponseModel"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "OpenAI text_completion events ending in [DONE]"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsupported request"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "413": {
+            "description": "Request body or prompt is too large"
+          },
+          "500": {
+            "description": "Generation failed"
+          },
+          "503": {
+            "description": "Model loading or temporarily unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAICompletionRequestModel"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/responses": {
+      "post": {
+        "tags": [
+          "openai-compat"
+        ],
+        "summary": "Responses",
+        "description": "Create one stateless, text-only OpenAI Responses result.",
+        "operationId": "responses_v1_responses_post",
+        "parameters": [
+          {
+            "name": "X-SIE-MACHINE-PROFILE",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sie-Machine-Profile"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIResponsesResponseModel"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsupported request"
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "413": {
+            "description": "Request body or rendered input is too large"
+          },
+          "500": {
+            "description": "Generation failed"
+          },
+          "503": {
+            "description": "Model loading or temporarily unavailable"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAIResponsesRequestModel"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ClassificationModel": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "Classification label"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score",
+            "description": "Confidence score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "score"
+        ],
+        "title": "ClassificationModel",
+        "description": "Classification result."
+      },
+      "DenseVectorModel": {
+        "properties": {
+          "dims": {
+            "type": "integer",
+            "title": "Dims",
+            "description": "Vector dimensionality"
+          },
+          "dtype": {
+            "type": "string",
+            "enum": [
+              "float32",
+              "float16",
+              "int8",
+              "uint8",
+              "binary"
+            ],
+            "title": "Dtype",
+            "description": "Data type"
+          },
+          "values": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Values",
+            "description": "Vector values"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dims",
+          "dtype",
+          "values"
+        ],
+        "title": "DenseVectorModel",
+        "description": "Dense embedding vector."
+      },
+      "EncodeResponseModel": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": "Model used for encoding"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EncodeResultModel"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Encoding results for each input item"
+          },
+          "timing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimingInfoModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Request timing breakdown"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Authoritative usage when the worker reported counts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model",
+          "items"
+        ],
+        "title": "EncodeResponseModel",
+        "description": "Response from encode endpoint."
+      },
+      "EncodeResultModel": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id",
+            "description": "Item ID (if provided in request)"
+          },
+          "dense": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DenseVectorModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Dense embedding"
+          },
+          "sparse": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SparseVectorModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Sparse embedding"
+          },
+          "multivector": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MultiVectorModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Multi-vector embedding"
+          }
+        },
+        "type": "object",
+        "title": "EncodeResultModel",
+        "description": "Single item encoding result."
+      },
+      "EntityModel": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Entity text"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "Entity label/type"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score",
+            "description": "Confidence score"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start",
+            "description": "Start character offset"
+          },
+          "end": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End",
+            "description": "End character offset"
+          },
+          "bbox": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox",
+            "description": "Bounding box for document entities"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text",
+          "label",
+          "score"
+        ],
+        "title": "EntityModel",
+        "description": "Extracted entity."
+      },
+      "ExtractItemErrorModel": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code",
+            "description": "Stable extraction error code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Sanitized extraction error message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ExtractItemErrorModel",
+        "description": "Stable per-item extraction failure."
+      },
+      "ExtractResponseModel": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": "Model used for extraction"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExtractResultModel"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Extraction results for each input item"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Authoritative usage when the worker reported counts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model",
+          "items"
+        ],
+        "title": "ExtractResponseModel",
+        "description": "Response from extract endpoint."
+      },
+      "ExtractResultModel": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Item ID"
+          },
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/EntityModel"
+            },
+            "type": "array",
+            "title": "Entities",
+            "description": "Extracted entities"
+          },
+          "relations": {
+            "items": {
+              "$ref": "#/components/schemas/RelationModel"
+            },
+            "type": "array",
+            "title": "Relations",
+            "description": "Extracted relations"
+          },
+          "classifications": {
+            "items": {
+              "$ref": "#/components/schemas/ClassificationModel"
+            },
+            "type": "array",
+            "title": "Classifications",
+            "description": "Classification results"
+          },
+          "data": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Data",
+            "description": "Structured extraction data"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExtractItemErrorModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-item extraction failure"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "ExtractResultModel",
+        "description": "Single item extraction result."
+      },
+      "GenerateInputTooLongDetailModel": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "const": "INPUT_TOO_LONG",
+            "title": "Code",
+            "description": "Stable error code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Client-safe error message"
+          },
+          "param": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Param",
+            "description": "Request field that exceeded the limit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "GenerateInputTooLongDetailModel",
+        "description": "Detail returned when a generation prompt exceeds the worker limit."
+      },
+      "GenerateInputTooLongErrorResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/GenerateInputTooLongDetailModel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "GenerateInputTooLongErrorResponse",
+        "description": "FastAPI error envelope for an oversized generation prompt."
+      },
+      "GenerateModelLoadFailedDetailModel": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "const": "MODEL_LOAD_FAILED",
+            "title": "Code",
+            "description": "Stable error code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Client-safe error message"
+          },
+          "error_class": {
+            "type": "string",
+            "title": "Error Class",
+            "description": "Classified model-load failure category"
+          },
+          "permanent": {
+            "type": "boolean",
+            "title": "Permanent",
+            "description": "Whether operator action is required before retrying"
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Attempts",
+            "description": "Number of failed model-load attempts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "error_class",
+          "permanent",
+          "attempts"
+        ],
+        "title": "GenerateModelLoadFailedDetailModel",
+        "description": "Detail returned for a terminal generation model-load failure."
+      },
+      "GenerateModelLoadFailedErrorResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/GenerateModelLoadFailedDetailModel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "GenerateModelLoadFailedErrorResponse",
+        "description": "FastAPI error envelope for a terminal generation model-load failure."
+      },
+      "GenerateResponseModel": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": "Model used for generation"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Generated text"
+          },
+          "finish_reason": {
+            "type": "string",
+            "title": "Finish Reason",
+            "description": "Reason generation stopped"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/GenerateUsageModel",
+            "description": "Token usage"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model",
+          "text",
+          "finish_reason",
+          "usage"
+        ],
+        "title": "GenerateResponseModel",
+        "description": "Blocking response from the SIE-native generate endpoint."
+      },
+      "GenerateUsageModel": {
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Prompt Tokens",
+            "description": "Number of prompt tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Completion Tokens",
+            "description": "Number of generated tokens"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Tokens",
+            "description": "Total prompt and generated tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens"
+        ],
+        "title": "GenerateUsageModel",
+        "description": "Token usage for one generation request."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ModelCapabilities": {
+        "properties": {
+          "grammar": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Grammar",
+            "default": []
+          },
+          "tools": {
+            "type": "boolean",
+            "title": "Tools",
+            "default": false
+          },
+          "code": {
+            "type": "boolean",
+            "title": "Code",
+            "default": false
+          },
+          "sql": {
+            "type": "boolean",
+            "title": "Sql",
+            "default": false
+          },
+          "guard": {
+            "type": "boolean",
+            "title": "Guard",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "ModelCapabilities",
+        "description": "Advertised generation capabilities for a model.\n\nMirrors the gateway ``capabilities`` wire shape\n(``ModelCapabilitiesWire``) for the keys derivable from the loaded\nmodel config's :class:`~sie_server.config.model.GenerateCapabilities`.\n``code``/``sql``/``guard`` are informational flags advertising\nvalidated generation jobs that back the ``model=\"code\"`` /\n``model=\"sql\"`` / ``model=\"guard\"`` aliases. Populated only for\nmodels that declare ``tasks.generate``; ``None`` otherwise.\n\nThese flags mean the model *supports* a task \u2014 they are NOT a\nprecision-independent quality SLA. A flag is true at the model level even\nwhen quality is profile/precision-dependent (e.g. ``sql`` quality regresses\nunder FP8; route SQL-critical traffic to a BF16 bundle via the ``sql``\nalias)."
+      },
+      "ModelInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "inputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Inputs"
+          },
+          "outputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Outputs"
+          },
+          "dims": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Dims"
+          },
+          "loaded": {
+            "type": "boolean",
+            "title": "Loaded"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "available",
+              "loading",
+              "loaded",
+              "unloading",
+              "failed"
+            ],
+            "title": "State",
+            "default": "available"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelLoadError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_sequence_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Sequence Length"
+          },
+          "profiles": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ProfileInfo"
+            },
+            "type": "object",
+            "title": "Profiles",
+            "default": {}
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelCapabilities"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "inputs",
+          "outputs",
+          "dims",
+          "loaded"
+        ],
+        "title": "ModelInfo",
+        "description": "Information about a model."
+      },
+      "ModelLoadError": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts"
+          },
+          "permanent": {
+            "type": "boolean",
+            "title": "Permanent"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "attempts",
+          "permanent"
+        ],
+        "title": "ModelLoadError",
+        "description": "Diagnostic detail for a recorded load failure.\n\nSurfaced in :class:`ModelInfo` when the registry has a sticky\nfailure for the model. Attributes mirror the server-side\n:class:`sie_server.core.load_errors.LoadFailure`."
+      },
+      "ModelsListResponse": {
+        "properties": {
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelInfo"
+            },
+            "type": "array",
+            "title": "Models"
+          }
+        },
+        "type": "object",
+        "required": [
+          "models"
+        ],
+        "title": "ModelsListResponse",
+        "description": "Response for listing models."
+      },
+      "MultiVectorModel": {
+        "properties": {
+          "token_dims": {
+            "type": "integer",
+            "title": "Token Dims",
+            "description": "Dimension per token"
+          },
+          "num_tokens": {
+            "type": "integer",
+            "title": "Num Tokens",
+            "description": "Number of tokens"
+          },
+          "dtype": {
+            "type": "string",
+            "enum": [
+              "float32",
+              "float16",
+              "int8",
+              "uint8",
+              "binary"
+            ],
+            "title": "Dtype",
+            "description": "Data type"
+          },
+          "values": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Values",
+            "description": "Token embeddings (num_tokens x token_dims)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token_dims",
+          "num_tokens",
+          "dtype",
+          "values"
+        ],
+        "title": "MultiVectorModel",
+        "description": "Multi-vector (token-level) embedding."
+      },
+      "OpenAICompletionChoiceModel": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "finish_reason": {
+            "type": "string",
+            "title": "Finish Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text",
+          "index",
+          "finish_reason"
+        ],
+        "title": "OpenAICompletionChoiceModel",
+        "description": "One choice in a blocking OpenAI legacy completion."
+      },
+      "OpenAICompletionResponseModel": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "object": {
+            "type": "string",
+            "const": "text_completion",
+            "title": "Object"
+          },
+          "created": {
+            "type": "integer",
+            "title": "Created"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "choices": {
+            "items": {
+              "$ref": "#/components/schemas/OpenAICompletionChoiceModel"
+            },
+            "type": "array",
+            "title": "Choices"
+          },
+          "system_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Fingerprint"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/GenerateUsageModel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "object",
+          "created",
+          "model",
+          "choices",
+          "usage"
+        ],
+        "title": "OpenAICompletionResponseModel",
+        "description": "Blocking OpenAI legacy-completions response."
+      },
+      "OpenAIEmbeddingData": {
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "embedding",
+            "title": "Object",
+            "default": "embedding"
+          },
+          "embedding": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Embedding",
+            "description": "Embedding vector (floats or base64)"
+          },
+          "index": {
+            "type": "integer",
+            "title": "Index",
+            "description": "Index in the input array"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "embedding",
+          "index"
+        ],
+        "title": "OpenAIEmbeddingData",
+        "description": "Single embedding result in OpenAI format."
+      },
+      "OpenAIEmbeddingRequest": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": "Model ID to use for embedding"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "items": {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Input",
+            "description": "Input text(s) or token array(s) to embed."
+          },
+          "encoding_format": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "float",
+                  "base64"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Encoding Format",
+            "description": "Format for embeddings: 'float' or 'base64'",
+            "default": "float"
+          },
+          "dimensions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimensions",
+            "description": "Requested embedding width. SIE always returns the model's native dense width, so this is accepted only when it equals that width; any other value is rejected with 400 `unsupported_field` rather than ignored."
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User",
+            "description": "User ID for tracking (ignored by SIE)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model",
+          "input"
+        ],
+        "title": "OpenAIEmbeddingRequest",
+        "description": "OpenAI-compatible embedding request.\n\nSee: https://platform.openai.com/docs/api-reference/embeddings"
+      },
+      "OpenAIEmbeddingResponse": {
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "list",
+            "title": "Object",
+            "default": "list"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/OpenAIEmbeddingData"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "Embedding results"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": "Model used"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/OpenAIUsage",
+            "description": "Token usage"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "data",
+          "model",
+          "usage"
+        ],
+        "title": "OpenAIEmbeddingResponse",
+        "description": "OpenAI-compatible embedding response."
+      },
+      "OpenAIEmbeddingsErrorModel": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Client-safe error message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "OpenAI error type, e.g. 'server_error'"
+          },
+          "param": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Param",
+            "description": "Offending request field, when known"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code",
+            "description": "Stable SIE error code, e.g. 'MODEL_LOADING'"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message",
+          "type",
+          "code"
+        ],
+        "title": "OpenAIEmbeddingsErrorModel",
+        "description": "Inner object of the top-level OpenAI ``{\"error\": {...}}`` envelope that\n``/v1/embeddings`` route-generated errors emit (e.g. a retryable 503\n``MODEL_LOADING``). Matches the shape ``/v1/completions`` returns."
+      },
+      "OpenAIEmbeddingsErrorResponse": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/OpenAIEmbeddingsErrorModel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "OpenAIEmbeddingsErrorResponse",
+        "description": "Top-level OpenAI error envelope for a retryable ``/v1/embeddings`` error."
+      },
+      "OpenAIEmbeddingsModelLoadFailedErrorModel": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Client-safe error message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "OpenAI error type ('server_error')"
+          },
+          "param": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Param",
+            "description": "Unused for this error; always null"
+          },
+          "code": {
+            "type": "string",
+            "const": "MODEL_LOAD_FAILED",
+            "title": "Code",
+            "description": "Stable error code"
+          },
+          "error_class": {
+            "type": "string",
+            "title": "Error Class",
+            "description": "Classified model-load failure category"
+          },
+          "permanent": {
+            "type": "boolean",
+            "title": "Permanent",
+            "description": "Whether operator action is required before retrying"
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Attempts",
+            "description": "Number of failed model-load attempts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message",
+          "type",
+          "code",
+          "error_class",
+          "permanent",
+          "attempts"
+        ],
+        "title": "OpenAIEmbeddingsModelLoadFailedErrorModel",
+        "description": "Inner error object for a terminal ``/v1/embeddings`` model-load failure,\ncarrying the terminal-failure short-circuit fields alongside the OpenAI shape."
+      },
+      "OpenAIEmbeddingsModelLoadFailedErrorResponse": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/OpenAIEmbeddingsModelLoadFailedErrorModel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "OpenAIEmbeddingsModelLoadFailedErrorResponse",
+        "description": "Top-level OpenAI error envelope for a terminal ``/v1/embeddings`` model-load failure."
+      },
+      "OpenAIResponseOutputMessageModel": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "message",
+            "title": "Type"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "role": {
+            "type": "string",
+            "const": "assistant",
+            "title": "Role"
+          },
+          "status": {
+            "type": "string",
+            "const": "completed",
+            "title": "Status"
+          },
+          "content": {
+            "items": {
+              "$ref": "#/components/schemas/OpenAIResponseOutputTextModel"
+            },
+            "type": "array",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "id",
+          "role",
+          "status",
+          "content"
+        ],
+        "title": "OpenAIResponseOutputMessageModel"
+      },
+      "OpenAIResponseOutputTextModel": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "output_text",
+            "title": "Type"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "annotations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Annotations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "text",
+          "annotations"
+        ],
+        "title": "OpenAIResponseOutputTextModel"
+      },
+      "OpenAIResponseUsageModel": {
+        "properties": {
+          "input_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Output Tokens"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "total_tokens"
+        ],
+        "title": "OpenAIResponseUsageModel"
+      },
+      "OpenAIResponsesResponseModel": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "object": {
+            "type": "string",
+            "const": "response",
+            "title": "Object"
+          },
+          "created_at": {
+            "type": "integer",
+            "title": "Created At"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "status": {
+            "type": "string",
+            "const": "completed",
+            "title": "Status"
+          },
+          "output": {
+            "items": {
+              "$ref": "#/components/schemas/OpenAIResponseOutputMessageModel"
+            },
+            "type": "array",
+            "title": "Output"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/OpenAIResponseUsageModel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "object",
+          "created_at",
+          "model",
+          "status",
+          "output",
+          "usage"
+        ],
+        "title": "OpenAIResponsesResponseModel",
+        "description": "One completed direct OpenAI Responses result."
+      },
+      "OpenAIUsage": {
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens",
+            "description": "Number of tokens in the input"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "title": "Total Tokens",
+            "description": "Total tokens (same as prompt_tokens for embeddings)"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "prompt_tokens",
+          "total_tokens"
+        ],
+        "title": "OpenAIUsage",
+        "description": "Token usage information."
+      },
+      "ProfileInfo": {
+        "properties": {
+          "is_default": {
+            "type": "boolean",
+            "title": "Is Default",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "ProfileInfo",
+        "description": "Information about a profile."
+      },
+      "RelationModel": {
+        "properties": {
+          "head": {
+            "type": "string",
+            "title": "Head",
+            "description": "Head entity text"
+          },
+          "tail": {
+            "type": "string",
+            "title": "Tail",
+            "description": "Tail entity text"
+          },
+          "relation": {
+            "type": "string",
+            "title": "Relation",
+            "description": "Relation type"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score",
+            "description": "Confidence score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "head",
+          "tail",
+          "relation",
+          "score"
+        ],
+        "title": "RelationModel",
+        "description": "Extracted relation between entities."
+      },
+      "ScoreEntryModel": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "Item ID"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score",
+            "description": "Relevance score"
+          },
+          "rank": {
+            "type": "integer",
+            "title": "Rank",
+            "description": "Rank (0 = most relevant)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "score",
+          "rank"
+        ],
+        "title": "ScoreEntryModel",
+        "description": "Single score entry."
+      },
+      "ScoreResponseModel": {
+        "properties": {
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": "Model used for scoring"
+          },
+          "query_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Id",
+            "description": "Query ID (if provided)"
+          },
+          "scores": {
+            "items": {
+              "$ref": "#/components/schemas/ScoreEntryModel"
+            },
+            "type": "array",
+            "title": "Scores",
+            "description": "Scores sorted by relevance (descending)"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScoreUsageModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Authoritative usage when emitted by the adapter"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model",
+          "scores"
+        ],
+        "title": "ScoreResponseModel",
+        "description": "Response from score endpoint."
+      },
+      "ScoreUsageModel": {
+        "properties": {
+          "input_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Input Tokens",
+            "description": "Post-truncation input tokens processed"
+          },
+          "images": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Images",
+            "description": "Images processed across query-document pairs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "input_tokens"
+        ],
+        "title": "ScoreUsageModel",
+        "description": "Authoritative worker-emitted score usage."
+      },
+      "SparseVectorModel": {
+        "properties": {
+          "dims": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dims",
+            "description": "Vocabulary size"
+          },
+          "dtype": {
+            "type": "string",
+            "enum": [
+              "float32",
+              "float16"
+            ],
+            "title": "Dtype",
+            "description": "Data type"
+          },
+          "indices": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Indices",
+            "description": "Non-zero indices"
+          },
+          "values": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Values",
+            "description": "Non-zero values"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dtype",
+          "indices",
+          "values"
+        ],
+        "title": "SparseVectorModel",
+        "description": "Sparse embedding vector."
+      },
+      "TimingInfoModel": {
+        "properties": {
+          "total_ms": {
+            "type": "number",
+            "title": "Total Ms",
+            "description": "Total request time in milliseconds"
+          },
+          "queue_ms": {
+            "type": "number",
+            "title": "Queue Ms",
+            "description": "Time waiting in queue"
+          },
+          "tokenization_ms": {
+            "type": "number",
+            "title": "Tokenization Ms",
+            "description": "Tokenization time"
+          },
+          "inference_ms": {
+            "type": "number",
+            "title": "Inference Ms",
+            "description": "Model inference time"
+          },
+          "postprocessing_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Postprocessing Ms",
+            "description": "Postprocessing time"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_ms",
+          "queue_ms",
+          "tokenization_ms",
+          "inference_ms"
+        ],
+        "title": "TimingInfoModel",
+        "description": "Request timing breakdown."
+      },
+      "UsageModel": {
+        "properties": {
+          "input_tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Input Tokens",
+            "description": "Post-truncation input tokens processed"
+          },
+          "images": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Images",
+            "description": "Images processed across the request's items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "input_tokens"
+        ],
+        "title": "UsageModel",
+        "description": "Authoritative worker-emitted usage.\n\nPost-tokenization counts, never a character estimate. A reported 0 is a\nmeasurement (a video-only encode reads no text); an absent block means the\ncounts were unavailable on this path."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "AudioInputModel": {
+        "description": "Audio input for audio models.",
+        "properties": {
+          "data": {
+            "contentEncoding": "base64",
+            "description": "Audio data. Base64-encoded on the JSON path; native binary on the msgpack path.",
+            "title": "Data",
+            "type": "string"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Audio format: 'wav', 'mp3', etc.",
+            "title": "Format"
+          },
+          "sample_rate": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Sample rate in Hz. Must be positive.",
+            "title": "Sample Rate"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "AudioInputModel",
+        "type": "object"
+      },
+      "DocumentInputModel": {
+        "description": "Document input for composite-document extractors (PDF, DOCX, HTML, ...).",
+        "properties": {
+          "data": {
+            "contentEncoding": "base64",
+            "description": "Document bytes (raw file content). Base64-encoded on the JSON path; native binary on the msgpack path.",
+            "title": "Data",
+            "type": "string"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Document format hint: 'pdf', 'docx', 'html', etc.",
+            "title": "Format"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "DocumentInputModel",
+        "type": "object"
+      },
+      "EncodeParamsModel": {
+        "description": "Parameters for encode requests.",
+        "properties": {
+          "output_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "dense",
+                    "sparse",
+                    "multivector"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Output types to return",
+            "title": "Output Types"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Task instruction for instruction-tuned models",
+            "title": "Instruction"
+          },
+          "output_dtype": {
+            "anyOf": [
+              {
+                "enum": [
+                  "float32",
+                  "float16",
+                  "int8",
+                  "binary"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Output dtype",
+            "title": "Output Dtype"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Runtime options",
+            "title": "Options"
+          }
+        },
+        "title": "EncodeParamsModel",
+        "type": "object"
+      },
+      "ImageInputModel": {
+        "description": "Image input for multimodal models.",
+        "properties": {
+          "data": {
+            "contentEncoding": "base64",
+            "description": "Image data. Base64-encoded on the JSON path; native binary on the msgpack path.",
+            "title": "Data",
+            "type": "string"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Image format hint: 'jpeg', 'png', etc.",
+            "title": "Format"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "ImageInputModel",
+        "type": "object"
+      },
+      "ItemModel": {
+        "additionalProperties": true,
+        "description": "A single item to encode.",
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional identifier for this item. Returned in response.",
+            "title": "Id"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Text content to encode",
+            "examples": [
+              "Hello, world!"
+            ],
+            "title": "Text"
+          },
+          "images": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ImageInputModel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Images for multimodal models",
+            "title": "Images"
+          },
+          "audio": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AudioInputModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Audio for audio models"
+          },
+          "video": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VideoInputModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Video for video models"
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentInputModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Document for composite-document extractors (PDF, DOCX, HTML, ...)"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Arbitrary metadata. Returned in response.",
+            "title": "Metadata"
+          }
+        },
+        "title": "ItemModel",
+        "type": "object"
+      },
+      "VideoInputModel": {
+        "description": "Video input for video models.",
+        "properties": {
+          "data": {
+            "contentEncoding": "base64",
+            "description": "Video data. Base64-encoded on the JSON path; native binary on the msgpack path.",
+            "title": "Data",
+            "type": "string"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Video format: 'mp4', 'webm', etc.",
+            "title": "Format"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "VideoInputModel",
+        "type": "object"
+      },
+      "EncodeRequestModel": {
+        "description": "Request body for encode endpoint.",
+        "examples": [
+          {
+            "items": [
+              {
+                "text": "Hello, world!"
+              },
+              {
+                "text": "How are you?"
+              }
+            ]
+          }
+        ],
+        "properties": {
+          "items": {
+            "description": "Items to encode",
+            "items": {
+              "$ref": "#/components/schemas/ItemModel"
+            },
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "params": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EncodeParamsModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Encoding parameters"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "EncodeRequestModel",
+        "type": "object"
+      },
+      "ExtractParamsModel": {
+        "description": "Parameters for extract requests.",
+        "properties": {
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 1000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Entity labels to extract",
+            "title": "Labels"
+          },
+          "output_schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Schema for structured extraction",
+            "title": "Output Schema"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Task instruction",
+            "title": "Instruction"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Adapter-specific options. Recognized sub-keys include 'overflow_policy' (one of 'default', 'truncate_text', 'error'; default 'default') controlling how inputs exceeding the model's max_sequence_length are handled.",
+            "title": "Options"
+          }
+        },
+        "title": "ExtractParamsModel",
+        "type": "object"
+      },
+      "ExtractRequestModel": {
+        "description": "Request body for extract endpoint.",
+        "examples": [
+          {
+            "items": [
+              {
+                "text": "Apple Inc. was founded by Steve Jobs in Cupertino, California."
+              }
+            ],
+            "params": {
+              "labels": [
+                "person",
+                "organization",
+                "location"
+              ]
+            }
+          },
+          {
+            "items": [
+              {
+                "text": "Apple Inc. was founded by Steve Jobs in Cupertino, California."
+              }
+            ],
+            "params": {
+              "labels": [
+                "person",
+                "organization",
+                "location"
+              ],
+              "options": {
+                "overflow_policy": "truncate_text"
+              }
+            }
+          }
+        ],
+        "properties": {
+          "items": {
+            "description": "Items to extract from",
+            "items": {
+              "$ref": "#/components/schemas/ItemModel"
+            },
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "params": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExtractParamsModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Extraction parameters"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ExtractRequestModel",
+        "type": "object"
+      },
+      "GenerateChunkErrorModel": {
+        "description": "Terminal error carried by a generation SSE event.",
+        "properties": {
+          "code": {
+            "description": "Stable error code",
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "description": "Client-safe error message",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "GenerateChunkErrorModel",
+        "type": "object"
+      },
+      "GenerateChunk": {
+        "description": "One SIE-native Server-Sent Event from a streaming generate request.",
+        "properties": {
+          "request_id": {
+            "description": "Request id shared by every event in the stream",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "seq": {
+            "description": "Monotonic event sequence number",
+            "minimum": 0,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "text_delta": {
+            "description": "Incremental generated text",
+            "title": "Text Delta",
+            "type": "string"
+          },
+          "done": {
+            "description": "True for the terminal event",
+            "title": "Done",
+            "type": "boolean"
+          },
+          "finish_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Termination reason on the terminal event",
+            "title": "Finish Reason"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerateUsageModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Token usage on the terminal event"
+          },
+          "ttft_ms": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Time to first token on the terminal event",
+            "title": "Ttft Ms"
+          },
+          "logprobs": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Per-token log probabilities aligned with text_delta",
+            "title": "Logprobs"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerateChunkErrorModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Terminal generation error"
+          }
+        },
+        "required": [
+          "request_id",
+          "seq",
+          "text_delta",
+          "done"
+        ],
+        "title": "GenerateChunk",
+        "type": "object"
+      },
+      "NativeEbnfGrammarModel": {
+        "additionalProperties": false,
+        "description": "EBNF structured-output constraint.",
+        "properties": {
+          "ebnf": {
+            "maxLength": 8192,
+            "title": "Ebnf",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "strict": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Strict"
+          }
+        },
+        "required": [
+          "ebnf"
+        ],
+        "title": "NativeEbnfGrammarModel",
+        "type": "object"
+      },
+      "NativeGenerateImageModel": {
+        "description": "One inline image on the SIE-native generate surface.",
+        "properties": {
+          "data": {
+            "description": "Canonical standard-base64 image bytes, at most 16 MiB decoded",
+            "maxLength": 22369624,
+            "minLength": 1,
+            "title": "Data",
+            "type": "string"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9.+-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Short media-format hint such as png or jpeg",
+            "title": "Format"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "NativeGenerateImageModel",
+        "type": "object"
+      },
+      "NativeJsonSchemaGrammarModel": {
+        "additionalProperties": false,
+        "description": "JSON Schema structured-output constraint.",
+        "properties": {
+          "json_schema": {
+            "additionalProperties": true,
+            "title": "Json Schema",
+            "type": "object"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "strict": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Strict"
+          }
+        },
+        "required": [
+          "json_schema"
+        ],
+        "title": "NativeJsonSchemaGrammarModel",
+        "type": "object"
+      },
+      "NativeRegexGrammarModel": {
+        "additionalProperties": false,
+        "description": "Regular-expression structured-output constraint.",
+        "properties": {
+          "regex": {
+            "maxLength": 4096,
+            "title": "Regex",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "strict": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Strict"
+          }
+        },
+        "required": [
+          "regex"
+        ],
+        "title": "NativeRegexGrammarModel",
+        "type": "object"
+      },
+      "GenerateRequestModel": {
+        "description": "Request body for the SIE-native generate endpoint.",
+        "examples": [
+          {
+            "max_new_tokens": 64,
+            "prompt": "Write one sentence about vector search.",
+            "stream": false,
+            "temperature": 0.7,
+            "top_p": 0.9
+          }
+        ],
+        "properties": {
+          "prompt": {
+            "description": "Prompt text to generate from",
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "images": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/NativeGenerateImageModel"
+                },
+                "maxItems": 16,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional inline images paired with prompt. The worker renders one user turn through the model's native chat template; remote URLs are not accepted.",
+            "title": "Images"
+          },
+          "grammar": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeJsonSchemaGrammarModel"
+              },
+              {
+                "$ref": "#/components/schemas/NativeRegexGrammarModel"
+              },
+              {
+                "$ref": "#/components/schemas/NativeEbnfGrammarModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional structured-output grammar; exactly one of json_schema, regex, or ebnf",
+            "title": "Grammar"
+          },
+          "max_new_tokens": {
+            "description": "Maximum number of tokens to generate",
+            "minimum": 1,
+            "title": "Max New Tokens",
+            "type": "integer"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Sampling temperature override",
+            "title": "Temperature"
+          },
+          "top_p": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 1,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Nucleus-sampling probability override",
+            "title": "Top P"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Governed generation runtime options; explicit top-level sampler fields override them",
+            "title": "Options"
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stop sequences",
+            "title": "Stop"
+          },
+          "stream": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Return SIE-native Server-Sent Events when true",
+            "title": "Stream"
+          },
+          "frequency_penalty": {
+            "anyOf": [
+              {
+                "maximum": 2,
+                "minimum": -2,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Frequency penalty",
+            "title": "Frequency Penalty"
+          },
+          "presence_penalty": {
+            "anyOf": [
+              {
+                "maximum": 2,
+                "minimum": -2,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Presence penalty",
+            "title": "Presence Penalty"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "maximum": 9223372036854775807,
+                "minimum": -9223372036854775808,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional signed 64-bit per-request sampling seed. Reproducibility is best effort, not guaranteed, and depends on the active generation backend and deployment configuration. Non-integer or out-of-range values reject with 400 invalid_request.",
+            "format": "int64",
+            "title": "Seed"
+          },
+          "logit_bias": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "maxProperties": 1024,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Token-id string to finite sampler bias in [-100, 100]",
+            "title": "Logit Bias"
+          },
+          "logprobs": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Return per-token log probabilities; supported only with stream true",
+            "title": "Logprobs"
+          },
+          "top_logprobs": {
+            "anyOf": [
+              {
+                "maximum": 20,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Alternative tokens per position; requires logprobs and stream true",
+            "title": "Top Logprobs"
+          },
+          "routing_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional routing hint",
+            "title": "Routing Key"
+          },
+          "prompt_cache_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional prompt-cache routing hint",
+            "title": "Prompt Cache Key"
+          },
+          "safety_identifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Sensitive client identifier; validated and dropped without logging or forwarding",
+            "title": "Safety Identifier"
+          }
+        },
+        "required": [
+          "prompt",
+          "max_new_tokens"
+        ],
+        "title": "GenerateRequestModel",
+        "type": "object"
+      },
+      "OpenAICompletionStreamOptionsModel": {
+        "additionalProperties": false,
+        "description": "Supported OpenAI legacy-completions stream controls.",
+        "properties": {
+          "include_usage": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Emit one usage-only chunk immediately before the [DONE] terminator",
+            "title": "Include Usage"
+          }
+        },
+        "title": "OpenAICompletionStreamOptionsModel",
+        "type": "object"
+      },
+      "OpenAICompletionRequestModel": {
+        "additionalProperties": false,
+        "description": "Strict single-candidate subset of the OpenAI legacy Completions API.",
+        "properties": {
+          "model": {
+            "description": "Generation model id",
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "description": "One raw prompt string, or a one-element string array; no chat template is applied",
+            "title": "Prompt"
+          },
+          "max_tokens": {
+            "anyOf": [
+              {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 16,
+            "description": "Maximum generated tokens",
+            "title": "Max Tokens"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "maximum": 3.4028234663852886e+38,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Sampling temperature override",
+            "title": "Temperature"
+          },
+          "top_p": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 1,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Nucleus-sampling probability override",
+            "title": "Top P"
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "One stop sequence or an array of stop sequences",
+            "title": "Stop"
+          },
+          "frequency_penalty": {
+            "anyOf": [
+              {
+                "maximum": 2,
+                "minimum": -2,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Frequency penalty",
+            "title": "Frequency Penalty"
+          },
+          "presence_penalty": {
+            "anyOf": [
+              {
+                "maximum": 2,
+                "minimum": -2,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Presence penalty",
+            "title": "Presence Penalty"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "maximum": 9223372036854775807,
+                "minimum": -9223372036854775808,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional signed 64-bit sampling seed",
+            "format": "int64",
+            "title": "Seed"
+          },
+          "stream": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Return OpenAI text_completion Server-Sent Events",
+            "title": "Stream"
+          },
+          "stream_options": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpenAICompletionStreamOptionsModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "n": {
+            "anyOf": [
+              {
+                "const": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Only one completion candidate is supported",
+            "title": "N"
+          }
+        },
+        "required": [
+          "model",
+          "prompt"
+        ],
+        "title": "OpenAICompletionRequestModel",
+        "type": "object"
+      },
+      "OpenAIResponseInputContentPartModel": {
+        "additionalProperties": false,
+        "description": "One text-only content part accepted by the Responses MVP.",
+        "properties": {
+          "type": {
+            "enum": [
+              "text",
+              "input_text",
+              "output_text"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "title": "OpenAIResponseInputContentPartModel",
+        "type": "object"
+      },
+      "OpenAIResponseInputMessageModel": {
+        "additionalProperties": false,
+        "description": "One stateless text message accepted by the Responses MVP.",
+        "properties": {
+          "role": {
+            "enum": [
+              "system",
+              "user",
+              "assistant",
+              "developer"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OpenAIResponseInputContentPartModel"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Content"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "OpenAIResponseInputMessageModel",
+        "type": "object"
+      },
+      "OpenAIResponsesRequestModel": {
+        "additionalProperties": false,
+        "description": "Strict stateless, text-only subset of the OpenAI Responses API.",
+        "properties": {
+          "model": {
+            "description": "Generation model id",
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OpenAIResponseInputMessageModel"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            ],
+            "title": "Input"
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 16,
+            "description": "Maximum generated tokens",
+            "title": "Max Output Tokens"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "maximum": 3.4028234663852886e+38,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Sampling temperature override",
+            "title": "Temperature"
+          },
+          "top_p": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 1,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Nucleus-sampling probability override",
+            "title": "Top P"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "maximum": 9223372036854775807,
+                "minimum": -9223372036854775808,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional signed 64-bit sampling seed",
+            "format": "int64",
+            "title": "Seed"
+          },
+          "stream": {
+            "anyOf": [
+              {
+                "const": false,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Responses streaming is not supported",
+            "title": "Stream"
+          }
+        },
+        "required": [
+          "model",
+          "input"
+        ],
+        "title": "OpenAIResponsesRequestModel",
+        "type": "object"
+      },
+      "ScoreRequestModel": {
+        "description": "Request body for score endpoint.",
+        "examples": [
+          {
+            "items": [
+              {
+                "text": "Machine learning is a branch of AI..."
+              },
+              {
+                "text": "The weather is nice today."
+              }
+            ],
+            "query": {
+              "text": "What is machine learning?"
+            }
+          }
+        ],
+        "properties": {
+          "query": {
+            "$ref": "#/components/schemas/ItemModel",
+            "description": "Query item to score against"
+          },
+          "items": {
+            "description": "Items to score",
+            "items": {
+              "$ref": "#/components/schemas/ItemModel"
+            },
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional scoring instruction",
+            "title": "Instruction"
+          }
+        },
+        "required": [
+          "query",
+          "items"
+        ],
+        "title": "ScoreRequestModel",
+        "type": "object"
+      }
+    }
+  }
+}

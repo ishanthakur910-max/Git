@@ -1,0 +1,4 @@
+# Auto-generated files for embeddedConfigs
+# ``mise run helm`` stages these from packages/sie_server/ before installation.
+bundles/
+models/

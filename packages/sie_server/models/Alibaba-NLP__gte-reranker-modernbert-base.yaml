@@ -1,0 +1,22 @@
+sie_id: Alibaba-NLP/gte-reranker-modernbert-base
+hf_id: Alibaba-NLP/gte-reranker-modernbert-base
+hf_revision: f7481e6055501a30fb19d090657df9ec1f79ab2c
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode: null
+  score: {}
+  extract: null
+max_sequence_length: 8192
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.modernbert_flash_cross_encoder:ModernBertFlashCrossEncoderAdapter
+    adapter_options:
+      loadtime:
+        trust_remote_code: true
+      runtime: {}

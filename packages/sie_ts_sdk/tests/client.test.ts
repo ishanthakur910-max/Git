@@ -1,0 +1,1842 @@
+/**
+ * SIEClient tests focused on real user scenarios.
+ *
+ * These tests verify that users can:
+ * 1. Create clients with various configurations
+ * 2. Encode text and receive embeddings
+ * 3. List available models
+ * 4. Handle errors gracefully
+ *
+ * Tests use mocked fetch to simulate server responses.
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SIEClient } from "../src/client.js";
+import {
+  ProvisioningError,
+  RequestError,
+  ResourceExhaustedError,
+  SIEConnectionError,
+  ServerError,
+} from "../src/errors.js";
+import { packMessage, unpackMessage } from "../src/msgpack.js";
+import type { SIEClientOptions } from "../src/types.js";
+
+// Mock fetch globally
+const mockFetch = vi.fn();
+vi.stubGlobal("fetch", mockFetch);
+
+// Helper to create a mock Response
+function createMockResponse(body: unknown, options: ResponseInit = {}): Response {
+  const isJson = typeof body === "object" && !(body instanceof Uint8Array);
+  const responseBody = isJson
+    ? JSON.stringify(body)
+    : body instanceof Uint8Array
+      ? body
+      : packMessage(body);
+
+  return new Response(responseBody, {
+    status: options.status ?? 200,
+    headers: {
+      "Content-Type": isJson ? "application/json" : "application/msgpack",
+      ...options.headers,
+    },
+  });
+}
+
+// Helper to create msgpack response
+function createMsgpackResponse(
+  body: unknown,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response {
+  return new Response(packMessage(body), {
+    status,
+    headers: { "Content-Type": "application/msgpack", ...headers },
+  });
+}
+
+describe("SIEClient construction", () => {
+  beforeEach(() => {
+    mockFetch.mockClear();
+  });
+
+  it("should create client with minimal options", () => {
+    const client = new SIEClient("http://localhost:8080");
+    expect(client).toBeInstanceOf(SIEClient);
+  });
+
+  it("should expose base URL via getBaseUrl()", () => {
+    const client = new SIEClient("http://localhost:8080");
+    expect(client.getBaseUrl()).toBe("http://localhost:8080");
+  });
+
+  it("should return normalized URL from getBaseUrl() without trailing slash", () => {
+    const client = new SIEClient("http://localhost:8080/");
+    expect(client.getBaseUrl()).toBe("http://localhost:8080");
+  });
+
+  it("rejects a baseUrl without an http(s) scheme or host at construction", () => {
+    // Previously `new SIEClient("localhost:8080")` surfaced only at request
+    // time as a fetch TypeError — silently retried for the whole provision
+    // budget with zero logging. Hostless inputs like `http://:8080` throw in
+    // `new URL()` and are rejected. `new URL()` also NORMALIZES `http:/v1`,
+    // `http:///v1`, `https:///v1` to a bogus host "v1" (WHATWG slash
+    // coalescing), so the constructor additionally requires a real
+    // `scheme://<authority>` — those wrong-host inputs are rejected too.
+    for (const bad of [
+      "localhost:8080",
+      "example.com",
+      "ftp://host:21",
+      "not a url",
+      "",
+      "http://:8080",
+      "https://:443",
+      "http:/v1",
+      "http:///v1",
+      "https:///v1",
+    ]) {
+      expect(() => new SIEClient(bad)).toThrow(/absolute http\(s\) URL with a host/);
+    }
+  });
+
+  it("should normalize base URL by removing trailing slash", async () => {
+    const client = new SIEClient("http://localhost:8080/");
+
+    // Mock a simple response
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1, 0.2]) } }],
+      }),
+    );
+
+    await client.encode("bge-m3", { text: "test" });
+
+    // Verify URL doesn't have double slashes
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:8080/v1/encode/bge-m3",
+      expect.anything(),
+    );
+  });
+
+  it("should accept timeout option", () => {
+    const client = new SIEClient("http://localhost:8080", { timeout: 60000 });
+    expect(client).toBeInstanceOf(SIEClient);
+  });
+
+  it("should accept gpu option", async () => {
+    const client = new SIEClient("http://localhost:8080", { gpu: "l4" });
+
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    await client.encode("bge-m3", { text: "test" });
+
+    // Verify GPU header is set
+    const fetchCall = mockFetch.mock.calls[0];
+    const headers = fetchCall?.[1]?.headers as Record<string, string>;
+    expect(headers["X-SIE-MACHINE-PROFILE"]).toBe("l4");
+  });
+
+  it("should accept apiKey option", async () => {
+    const client = new SIEClient("http://localhost:8080", { apiKey: "sk-test-key" });
+
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    await client.encode("bge-m3", { text: "test" });
+
+    // Verify Authorization header
+    const fetchCall = mockFetch.mock.calls[0];
+    const headers = fetchCall?.[1]?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer sk-test-key");
+  });
+});
+
+describe("SIEClient construction - timeout unit (timeoutMs vs timeout)", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // A fetch that never resolves until its AbortSignal fires, then rejects with
+  // an AbortError — the way a real per-request timeout surfaces. The client's
+  // internal `setTimeout(abort, timeout)` (faked here) drives the abort, so the
+  // effective timeout is observable via the "Request timeout after <n>ms"
+  // message the client raises.
+  function mockHangingFetch(): void {
+    mockFetch.mockImplementation(
+      (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("The user aborted a request."), { name: "AbortError" }));
+          });
+        }),
+    );
+  }
+
+  // Drive one encode to its timeout abort and return the ms value the client
+  // actually aborted at, parsed from the timeout message.
+  async function effectiveTimeoutMs(options: SIEClientOptions): Promise<number> {
+    mockHangingFetch();
+    const client = new SIEClient("http://localhost:8080", options);
+    // Attach the handler synchronously so advancing timers cannot surface an
+    // unhandled rejection before we await the result.
+    const settled = client.encode("bge-m3", { text: "test" }, { waitForCapacity: false }).then(
+      () => {
+        throw new Error("expected a timeout rejection");
+      },
+      (err: unknown) => err as Error,
+    );
+    await vi.advanceTimersByTimeAsync(1_000_000);
+    const err = await settled;
+    await client.close();
+    const match = /Request timeout after (\d+)ms/.exec(err.message);
+    if (!match) {
+      throw new Error(`unexpected error message: ${err.message}`);
+    }
+    return Number(match[1]);
+  }
+
+  it("applies timeoutMs as the milliseconds timeout", async () => {
+    expect(await effectiveTimeoutMs({ timeoutMs: 1234 })).toBe(1234);
+  });
+
+  it("treats the deprecated timeout alias as the same milliseconds value", async () => {
+    // Same numeric value under either key must yield the same effective abort.
+    expect(await effectiveTimeoutMs({ timeout: 1234 })).toBe(
+      await effectiveTimeoutMs({ timeoutMs: 1234 }),
+    );
+  });
+
+  it("prefers timeoutMs over the deprecated timeout when both are set", async () => {
+    expect(await effectiveTimeoutMs({ timeoutMs: 1234, timeout: 9999 })).toBe(1234);
+  });
+});
+
+describe("SIEClient.encode() - basic usage", () => {
+  let client: SIEClient;
+
+  beforeEach(() => {
+    mockFetch.mockClear();
+    client = new SIEClient("http://localhost:8080");
+  });
+
+  afterEach(async () => {
+    await client.close();
+  });
+
+  it("should encode single item and return EncodeResult", async () => {
+    // User scenario: "I want to encode a single text document"
+    const embedding = new Float32Array([0.1, 0.2, 0.3, 0.4]);
+
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: embedding } }],
+      }),
+    );
+
+    const result = await client.encode("bge-m3", { text: "Hello world" });
+
+    // Should return single result, not array
+    expect(result.dense).toBeInstanceOf(Float32Array);
+    expect(result.dense?.length).toBe(4);
+  });
+
+  it("should encode batch items and return EncodeResult[]", async () => {
+    // User scenario: "I want to encode multiple documents efficiently"
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [
+          { id: "doc-1", dense: { values: new Float32Array([0.1]) } },
+          { id: "doc-2", dense: { values: new Float32Array([0.2]) } },
+          { id: "doc-3", dense: { values: new Float32Array([0.3]) } },
+        ],
+      }),
+    );
+
+    const results = await client.encode("bge-m3", [
+      { id: "doc-1", text: "First document" },
+      { id: "doc-2", text: "Second document" },
+      { id: "doc-3", text: "Third document" },
+    ]);
+
+    expect(results).toHaveLength(3);
+    expect(results[0]?.id).toBe("doc-1");
+    expect(results[1]?.id).toBe("doc-2");
+    expect(results[2]?.id).toBe("doc-3");
+  });
+
+  it("attaches detached request-scoped usage and debit metadata", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse(
+        {
+          items: [
+            { id: "doc-1", dense: { values: new Float32Array([0.1]) } },
+            { id: "doc-2", dense: { values: new Float32Array([0.2]) } },
+          ],
+        },
+        200,
+        {
+          "x-sie-request-id": "req-encode",
+          "x-sie-execution-identity-sha256": "a".repeat(64),
+          "x-sie-units-input-tokens": "11",
+          "x-sie-units-pairs": "2",
+          "x-sie-units-images": "1",
+          "x-sie-units-pages": "3",
+          "x-sie-units-output-tokens": "5",
+          "x-sie-units-audio-ms": "1200",
+          "x-sie-credits-debited": "17",
+        },
+      ),
+    );
+
+    const results = await client.encode("bge-m3", [
+      { id: "doc-1", text: "First" },
+      { id: "doc-2", text: "Second" },
+    ]);
+
+    expect(results[0]?.request).toEqual({
+      id: "req-encode",
+      executionIdentitySha256: "a".repeat(64),
+      usage: {
+        inputTokens: 11,
+        pairs: 2,
+        images: 1,
+        pages: 3,
+        outputTokens: 5,
+        audioMs: 1200,
+      },
+      creditsDebited: 17,
+    });
+    expect(results[1]?.request).toEqual(results[0]?.request);
+    expect(results[1]?.request).not.toBe(results[0]?.request);
+    expect(results[1]?.request?.usage).not.toBe(results[0]?.request?.usage);
+  });
+
+  it("omits malformed request metadata fields independently", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({ items: [{ dense: { values: new Float32Array([0.1]) } }] }, 200, {
+        "x-sie-request-id": "réq-bad",
+        "x-sie-execution-identity-sha256": "A".repeat(64),
+        "x-sie-units-input-tokens": "01",
+        "x-sie-units-pairs": "2",
+        "x-sie-credits-debited": "9007199254740992",
+      }),
+    );
+
+    const result = await client.encode("bge-m3", { text: "test" });
+    expect(result.request).toEqual({ usage: { pairs: 2 } });
+  });
+
+  it("should preserve item IDs through encode cycle", async () => {
+    // User scenario: "I need to match embeddings back to my source documents"
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ id: "uuid-abc123", dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    const result = await client.encode("bge-m3", { id: "uuid-abc123", text: "Some text" });
+
+    expect(result.id).toBe("uuid-abc123");
+  });
+
+  it("should construct correct URL with model in path", async () => {
+    // Verify wire format: POST /v1/encode/{model}
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    await client.encode("BAAI/bge-m3", { text: "test" });
+
+    // URL should have encoded model name
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:8080/v1/encode/BAAI%2Fbge-m3",
+      expect.anything(),
+    );
+  });
+
+  it("should send correct Content-Type header", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    await client.encode("bge-m3", { text: "test" });
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const headers = fetchCall?.[1]?.headers as Record<string, string>;
+    expect(headers["Content-Type"]).toBe("application/msgpack");
+    expect(headers.Accept).toBe("application/msgpack");
+  });
+
+  it("should send correct request body format", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    await client.encode("bge-m3", { text: "Hello world" });
+
+    // Verify request body structure
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{ items: Array<{ text: string }> }>(body);
+
+    expect(parsed.items).toHaveLength(1);
+    expect(parsed.items[0]?.text).toBe("Hello world");
+  });
+});
+
+describe("SIEClient.encode() - encode options", () => {
+  let client: SIEClient;
+
+  beforeEach(() => {
+    mockFetch.mockClear();
+    client = new SIEClient("http://localhost:8080");
+  });
+
+  afterEach(async () => {
+    await client.close();
+  });
+
+  it("should pass outputTypes in params", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [
+          {
+            dense: { values: new Float32Array([0.1]) },
+            sparse: { indices: new Int32Array([0, 5]), values: new Float32Array([0.5, 0.8]) },
+          },
+        ],
+      }),
+    );
+
+    await client.encode("bge-m3", { text: "test" }, { outputTypes: ["dense", "sparse"] });
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{ params?: { output_types?: string[] } }>(body);
+
+    expect(parsed.params?.output_types).toEqual(["dense", "sparse"]);
+  });
+
+  it("should pass instruction in params", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    await client.encode("bge-m3", { text: "What is ML?" }, { instruction: "Retrieve passages" });
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{ params?: { instruction?: string } }>(body);
+
+    expect(parsed.params?.instruction).toBe("Retrieve passages");
+  });
+
+  it("should pass isQuery as is_query in params", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    await client.encode("bge-m3", { text: "query" }, { isQuery: true });
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{ params?: { is_query?: boolean } }>(body);
+
+    expect(parsed.params?.is_query).toBe(true);
+  });
+
+  it("should allow per-request GPU override", async () => {
+    const clientWithDefaultGpu = new SIEClient("http://localhost:8080", { gpu: "l4" });
+
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    // Override default GPU with a100
+    await clientWithDefaultGpu.encode("bge-m3", { text: "test" }, { gpu: "a100-80gb" });
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const headers = fetchCall?.[1]?.headers as Record<string, string>;
+    expect(headers["X-SIE-MACHINE-PROFILE"]).toBe("a100-80gb");
+
+    await clientWithDefaultGpu.close();
+  });
+});
+
+describe("SIEClient.encode() - response parsing", () => {
+  let client: SIEClient;
+
+  beforeEach(() => {
+    mockFetch.mockClear();
+    client = new SIEClient("http://localhost:8080");
+  });
+
+  afterEach(async () => {
+    await client.close();
+  });
+
+  it("should parse dense embeddings from nested wire format", async () => {
+    // Wire format: {"dense": {"values": Float32Array}}
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1, 0.2, 0.3]) } }],
+      }),
+    );
+
+    const result = await client.encode("bge-m3", { text: "test" });
+
+    expect(result.dense).toBeInstanceOf(Float32Array);
+    expect(result.dense?.[0]).toBeCloseTo(0.1);
+    expect(result.dense?.[1]).toBeCloseTo(0.2);
+    expect(result.dense?.[2]).toBeCloseTo(0.3);
+  });
+
+  it("should parse sparse embeddings correctly", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [
+          {
+            sparse: {
+              indices: new Int32Array([0, 10, 100]),
+              values: new Float32Array([0.5, 0.8, 0.3]),
+            },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.encode("bge-m3", { text: "test" }, { outputTypes: ["sparse"] });
+
+    expect(result.sparse?.indices).toBeInstanceOf(Int32Array);
+    expect(result.sparse?.values).toBeInstanceOf(Float32Array);
+    expect(result.sparse?.indices?.length).toBe(3);
+  });
+
+  it("should parse multivector embeddings from nested wire format", async () => {
+    // Wire format: {"multivector": {"values": Float32Array[]}}
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [
+          {
+            multivector: {
+              values: [
+                new Float32Array([0.1, 0.2]),
+                new Float32Array([0.3, 0.4]),
+                new Float32Array([0.5, 0.6]),
+              ],
+            },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.encode(
+      "jina-colbert-v2",
+      { text: "test" },
+      { outputTypes: ["multivector"] },
+    );
+
+    expect(result.multivector).toHaveLength(3);
+    expect(result.multivector?.[0]).toBeInstanceOf(Float32Array);
+    expect(result.multivector?.[0]?.[0]).toBeCloseTo(0.1);
+  });
+});
+
+describe("SIEClient.listModels()", () => {
+  let client: SIEClient;
+
+  beforeEach(() => {
+    mockFetch.mockClear();
+    client = new SIEClient("http://localhost:8080");
+  });
+
+  afterEach(async () => {
+    await client.close();
+  });
+
+  it("should list available models", async () => {
+    // User scenario: "I want to see what models are available"
+    mockFetch.mockResolvedValueOnce(
+      createMockResponse({
+        models: [
+          { name: "bge-m3", loaded: true, inputs: ["text"], outputs: ["dense", "sparse"] },
+          {
+            name: "colpali-v1.3",
+            loaded: false,
+            inputs: ["text", "image"],
+            outputs: ["multivector"],
+          },
+        ],
+      }),
+    );
+
+    const models = await client.listModels();
+
+    expect(models).toHaveLength(2);
+    expect(models[0]?.name).toBe("bge-m3");
+    expect(models[0]?.loaded).toBe(true);
+    expect(models[1]?.inputs).toContain("image");
+  });
+
+  it("should use GET request for models endpoint", async () => {
+    mockFetch.mockResolvedValueOnce(createMockResponse({ models: [] }));
+
+    await client.listModels();
+
+    const fetchCall = mockFetch.mock.calls[0];
+    expect(fetchCall?.[1]?.method).toBe("GET");
+  });
+
+  it("should convert max_sequence_length to maxSequenceLength", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMockResponse({
+        models: [
+          {
+            name: "bge-m3",
+            loaded: true,
+            inputs: ["text"],
+            outputs: ["dense"],
+            max_sequence_length: 8192,
+          },
+        ],
+      }),
+    );
+
+    const models = await client.listModels();
+
+    expect(models[0]?.maxSequenceLength).toBe(8192);
+  });
+});
+
+describe("SIEClient error handling", () => {
+  let client: SIEClient;
+
+  beforeEach(() => {
+    mockFetch.mockClear();
+    client = new SIEClient("http://localhost:8080", { timeout: 1000 });
+  });
+
+  afterEach(async () => {
+    await client.close();
+  });
+
+  it("should throw RequestError for 4xx responses", async () => {
+    // User scenario: "I made an invalid request"
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ code: "INVALID_MODEL", detail: "Model not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(client.encode("nonexistent-model", { text: "test" })).rejects.toThrow(
+      RequestError,
+    );
+  });
+
+  it("should throw ServerError for 5xx responses", async () => {
+    // User scenario: "The server had an error"
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ code: "INTERNAL_ERROR", detail: "Something broke" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(client.encode("bge-m3", { text: "test" })).rejects.toThrow(ServerError);
+  });
+
+  it("should throw SIEConnectionError for fetch failures", async () => {
+    // User scenario: "The server is down". waitForCapacity now defaults to
+    // true (Python-SDK parity), so opt out to fail fast instead of retrying
+    // the connect error for the whole provision budget.
+    mockFetch.mockRejectedValueOnce(new TypeError("fetch failed"));
+
+    await expect(
+      client.encode("bge-m3", { text: "test" }, { waitForCapacity: false }),
+    ).rejects.toThrow(SIEConnectionError);
+  });
+
+  it("should throw SIEConnectionError for timeout", async () => {
+    // User scenario: "The request took too long"
+    // Create a promise that never resolves
+    mockFetch.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          // Simulate abort after timeout
+          setTimeout(() => {
+            const error = new Error("Aborted");
+            error.name = "AbortError";
+            reject(error);
+          }, 10);
+        }),
+    );
+
+    await expect(client.encode("bge-m3", { text: "test" })).rejects.toThrow(SIEConnectionError);
+  });
+});
+
+describe("SIEClient.close()", () => {
+  it("should be callable multiple times without error", async () => {
+    const client = new SIEClient("http://localhost:8080");
+
+    // Should not throw
+    await client.close();
+    await client.close();
+  });
+});
+
+describe("SIEClient retry on connection errors and provisioning 503s", () => {
+  beforeEach(() => {
+    mockFetch.mockClear();
+    // Fake timers also fake Date.now(), which requestWithRetry uses.
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("should retry on connection error when waitForCapacity is true", async () => {
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    mockFetch.mockRejectedValueOnce(new TypeError("fetch failed")).mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1, 0.2]) } }],
+      }),
+    );
+
+    const promise = client.encode("bge-m3", { text: "test" }, { waitForCapacity: true });
+
+    // DEFAULT_RETRY_DELAY = 5_000ms.
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const result = await promise;
+
+    expect(result.dense).toBeInstanceOf(Float32Array);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    await client.close();
+  });
+
+  it("should not retry on connection error when waitForCapacity is false", async () => {
+    const client = new SIEClient("http://localhost:8080", { timeout: 1000 });
+
+    mockFetch.mockRejectedValueOnce(new TypeError("fetch failed"));
+
+    await expect(
+      client.encode("bge-m3", { text: "test" }, { waitForCapacity: false }),
+    ).rejects.toThrow(SIEConnectionError);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await client.close();
+  });
+
+  it("should NOT retry a URL-parse TypeError (permanent config error)", async () => {
+    // A malformed request URL is not a transient network failure: retrying
+    // it silently for the whole provision budget can never succeed.
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    const parseError = new TypeError("Failed to parse URL from localhost:8080/v1/encode/bge-m3");
+    (parseError as TypeError & { cause?: { code: string } }).cause = { code: "ERR_INVALID_URL" };
+    mockFetch.mockRejectedValueOnce(parseError);
+
+    const err = await client
+      .encode("bge-m3", { text: "test" }, { waitForCapacity: true })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SIEConnectionError);
+    expect((err as SIEConnectionError).kind).toBe("other");
+    expect((err as SIEConnectionError).message).toContain("absolute http(s) URL");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await client.close();
+  });
+
+  it("should warn once on the first connect retry", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    mockFetch
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(
+        createMsgpackResponse({
+          items: [{ dense: { values: new Float32Array([0.1, 0.2]) } }],
+        }),
+      );
+
+    const promise = client.encode("bge-m3", { text: "test" }, { waitForCapacity: true });
+    // Two retries at DEFAULT_RETRY_DELAY = 5_000ms each.
+    await vi.advanceTimersByTimeAsync(10_000);
+    await promise;
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain("http://localhost:8080");
+
+    warnSpy.mockRestore();
+    await client.close();
+  });
+
+  it("logs only the origin (no credentials, path, or query) in the connect-retry warning", async () => {
+    // A baseUrl carrying `user:secret@` AND a
+    // `?access_token=` query param must leak neither — only scheme://host:port.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const client = new SIEClient(
+      "https://user:s3cr3t-token@gateway.example.test:8443/v1?access_token=querysecret",
+      {
+        timeout: 30_000,
+        provisionTimeout: 60_000,
+      },
+    );
+
+    mockFetch.mockRejectedValueOnce(new TypeError("fetch failed")).mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1, 0.2]) } }],
+      }),
+    );
+
+    const promise = client.encode("bge-m3", { text: "test" }, { waitForCapacity: true });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await promise;
+
+    const warned = String(warnSpy.mock.calls[0]?.[0]);
+    expect(warned).not.toContain("s3cr3t-token");
+    expect(warned).not.toContain("querysecret");
+    expect(warned).not.toContain("user:");
+    expect(warned).not.toContain("access_token");
+    expect(warned).toContain("https://gateway.example.test:8443");
+
+    warnSpy.mockRestore();
+    await client.close();
+  });
+
+  it("should NOT retry on per-request timeout even when waitForCapacity is true", async () => {
+    // Pin the kind === "timeout" no-retry contract; see requestWithRetry docstring.
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    // request() wraps AbortError as SIEConnectionError with kind="timeout".
+    mockFetch.mockRejectedValueOnce(
+      Object.assign(new Error("The user aborted a request."), { name: "AbortError" }),
+    );
+
+    await expect(
+      client.encode("bge-m3", { text: "test" }, { waitForCapacity: true }),
+    ).rejects.toThrow(SIEConnectionError);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await client.close();
+  });
+
+  it("should give up retrying connection errors after provisionTimeout", async () => {
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 10_000,
+    });
+
+    mockFetch.mockRejectedValue(new TypeError("fetch failed"));
+
+    const promise = client.encode("bge-m3", { text: "test" }, { waitForCapacity: true });
+    // Attach assertion before advancing timers to avoid unhandled-rejection warnings.
+    const expectation = expect(promise).rejects.toThrow(SIEConnectionError);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expectation;
+
+    expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // provisionTimeout=10s / DEFAULT_RETRY_DELAY=5s → 3 expected calls.
+    expect(mockFetch.mock.calls.length).toBeLessThanOrEqual(4);
+
+    await client.close();
+  });
+
+  it("should retry on 503 PROVISIONING when waitForCapacity is true", async () => {
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    mockFetch
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "PROVISIONING",
+              message: "No capacity available. Server is provisioning.",
+            },
+          }),
+          {
+            status: 503,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        createMsgpackResponse({
+          items: [{ dense: { values: new Float32Array([0.1, 0.2]) } }],
+        }),
+      );
+
+    const promise = client.encode("bge-m3", { text: "test" }, { waitForCapacity: true });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const result = await promise;
+
+    expect(result.dense).toBeInstanceOf(Float32Array);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    await client.close();
+  });
+
+  it("should throw ProvisioningError on 503 PROVISIONING when waitForCapacity is false", async () => {
+    const client = new SIEClient("http://localhost:8080", { timeout: 1000 });
+
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "PROVISIONING",
+            message: "No capacity available. Server is provisioning.",
+          },
+        }),
+        {
+          status: 503,
+          headers: { "Content-Type": "application/json", "Retry-After": "7" },
+        },
+      ),
+    );
+
+    await expect(
+      client.encode("bge-m3", { text: "test" }, { waitForCapacity: false }),
+    ).rejects.toThrow(ProvisioningError);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await client.close();
+  });
+
+  it("should not retry on generic 503 even when waitForCapacity is true", async () => {
+    const client = new SIEClient("http://localhost:8080", { timeout: 1000 });
+
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: "service unavailable" }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(
+      client.encode("bge-m3", { text: "test" }, { waitForCapacity: true }),
+    ).rejects.toThrow(ServerError);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await client.close();
+  });
+
+  it("should honor Retry-After header on 503 PROVISIONING", async () => {
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    mockFetch
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "PROVISIONING",
+              message: "No capacity available. Server is provisioning.",
+            },
+          }),
+          {
+            status: 503,
+            headers: {
+              "Content-Type": "application/json",
+              "Retry-After": "2", // < DEFAULT_RETRY_DELAY (5s)
+            },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        createMsgpackResponse({
+          items: [{ dense: { values: new Float32Array([0.1]) } }],
+        }),
+      );
+
+    const promise = client.encode("bge-m3", { text: "test" }, { waitForCapacity: true });
+
+    // Second fetch must not fire before 2s — proves sleep is ≥ 2s.
+    await vi.advanceTimersByTimeAsync(1_900);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Second fetch fires after the full 2s — proves Retry-After is honored.
+    await vi.advanceTimersByTimeAsync(200);
+    const result = await promise;
+
+    expect(result.dense).toBeInstanceOf(Float32Array);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    await client.close();
+  });
+
+  it("defaults waitForCapacity to true (Python-SDK parity)", async () => {
+    // No explicit waitForCapacity anywhere: the constructor default must
+    // now retry 503 PROVISIONING instead of failing fast.
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    mockFetch
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { code: "PROVISIONING", message: "provisioning" } }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createMsgpackResponse({
+          items: [{ dense: { values: new Float32Array([0.1]) } }],
+        }),
+      );
+
+    const promise = client.encode("bge-m3", { text: "test" });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await promise;
+
+    expect(result.dense).toBeInstanceOf(Float32Array);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    await client.close();
+  });
+});
+
+describe("SIEClient retry on 503 RESOURCE_EXHAUSTED and 504 gateway timeout", () => {
+  beforeEach(() => {
+    mockFetch.mockClear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function oomResponse(headers: Record<string, string> = {}): Response {
+    return new Response(
+      JSON.stringify({ error: { code: "RESOURCE_EXHAUSTED", message: "out of memory" } }),
+      { status: 503, headers: { "Content-Type": "application/json", ...headers } },
+    );
+  }
+
+  function gatewayTimeoutResponse(): Response {
+    return new Response(
+      JSON.stringify({ error: { code: "GATEWAY_TIMEOUT", message: "result deadline exceeded" } }),
+      { status: 504, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  it("retries 503 RESOURCE_EXHAUSTED with backoff then succeeds", async () => {
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    mockFetch.mockResolvedValueOnce(oomResponse()).mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    const promise = client.encode("bge-m3", { text: "test" });
+
+    // First OOM backoff is jittered but never exceeds the 5s base.
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await promise;
+
+    expect(result.dense).toBeInstanceOf(Float32Array);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    await client.close();
+  });
+
+  it("retries 503 RESOURCE_EXHAUSTED even when waitForCapacity is false", async () => {
+    // Python-SDK parity: the OOM budget is independent of waitForCapacity
+    // on the buffered paths (the worker already accepted the request).
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    mockFetch.mockResolvedValueOnce(oomResponse()).mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    const promise = client.encode("bge-m3", { text: "test" }, { waitForCapacity: false });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await promise;
+
+    expect(result.dense).toBeInstanceOf(Float32Array);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    await client.close();
+  });
+
+  it("throws ResourceExhaustedError after the bounded OOM retry budget", async () => {
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    // Sustained OOM: every attempt returns RESOURCE_EXHAUSTED.
+    mockFetch.mockImplementation(() => Promise.resolve(oomResponse()));
+
+    const promise = client.encode("bge-m3", { text: "test" });
+    const expectation = expect(promise).rejects.toThrow(ResourceExhaustedError);
+
+    // Max backoff schedule (no Retry-After): ≤5s, ≤10s, ≤20s → ≤35s total.
+    await vi.advanceTimersByTimeAsync(35_000);
+    await expectation;
+
+    // RESOURCE_EXHAUSTED_MAX_RETRIES = 3 → 4 requests (initial + 3 retries).
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+
+    await client.close();
+  });
+
+  it("honors Retry-After verbatim on the first OOM retry", async () => {
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    mockFetch.mockResolvedValueOnce(oomResponse({ "Retry-After": "1" })).mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    const promise = client.encode("bge-m3", { text: "test" });
+
+    // The first server hint (1s) is honored verbatim — no jitter, so the
+    // retry must not fire before the full second elapses.
+    await vi.advanceTimersByTimeAsync(999);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await promise;
+
+    expect(result.dense).toBeInstanceOf(Float32Array);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    await client.close();
+  });
+
+  it("retries 504 gateway timeouts on the idempotent encode path", async () => {
+    const client = new SIEClient("http://localhost:8080", {
+      timeout: 30_000,
+      provisionTimeout: 60_000,
+    });
+
+    mockFetch.mockResolvedValueOnce(gatewayTimeoutResponse()).mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1]) } }],
+      }),
+    );
+
+    const promise = client.encode("bge-m3", { text: "test" });
+
+    // 504 retry delay defaults to MODEL_LOADING_DEFAULT_DELAY (5s).
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await promise;
+
+    expect(result.dense).toBeInstanceOf(Float32Array);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    await client.close();
+  });
+
+  it("does not retry 504 when waitForCapacity is false", async () => {
+    const client = new SIEClient("http://localhost:8080", { timeout: 1000 });
+
+    mockFetch.mockResolvedValueOnce(gatewayTimeoutResponse());
+
+    await expect(
+      client.encode("bge-m3", { text: "test" }, { waitForCapacity: false }),
+    ).rejects.toThrow(ServerError);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await client.close();
+  });
+});
+
+describe("SIEClient.createPool() - bundle / warm-floor / pinned-model args", () => {
+  beforeEach(() => {
+    mockFetch.mockClear();
+  });
+
+  function poolCreatedResponse(): Response {
+    return createMockResponse({ name: "eval", spec: {}, status: { state: "pending" } });
+  }
+
+  it("sends bundle, minimum_worker_count and pinned_models on the wire", async () => {
+    const client = new SIEClient("http://localhost:8080");
+    mockFetch.mockResolvedValueOnce(poolCreatedResponse());
+
+    await client.createPool("eval", { l4: 2 }, { l4: 4 }, "batch", {
+      bundle: "default",
+      minimumWorkerCount: 1,
+      pinnedModels: ["bge-m3:default"],
+    });
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe("http://localhost:8080/v1/pools");
+    expect(init.redirect).toBe("error");
+    expect(JSON.parse(init.body)).toEqual({
+      name: "eval",
+      gpus: { l4: 2 },
+      gpu_caps: { l4: 4 },
+      queue_pool: "batch",
+      bundle: "default",
+      minimum_worker_count: 1,
+      pinned_models: ["bge-m3:default"],
+    });
+
+    await client.close();
+  });
+
+  it("omits the optional fields from the wire body when not provided", async () => {
+    const client = new SIEClient("http://localhost:8080");
+    mockFetch.mockResolvedValueOnce(poolCreatedResponse());
+
+    await client.createPool("eval", { l4: 2 });
+
+    const [, init] = mockFetch.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ name: "eval", gpus: { l4: 2 } });
+
+    await client.close();
+  });
+
+  it("preserves an explicit zero warm floor (scale to zero)", async () => {
+    const client = new SIEClient("http://localhost:8080");
+    mockFetch.mockResolvedValueOnce(poolCreatedResponse());
+
+    await client.createPool("eval", { l4: 2 }, undefined, undefined, { minimumWorkerCount: 0 });
+
+    const [, init] = mockFetch.mock.calls[0];
+    expect(JSON.parse(init.body).minimum_worker_count).toBe(0);
+
+    await client.close();
+  });
+
+  it("rejects a negative warm floor without issuing a request", async () => {
+    const client = new SIEClient("http://localhost:8080");
+
+    await expect(
+      client.createPool("eval", undefined, undefined, undefined, { minimumWorkerCount: -1 }),
+    ).rejects.toThrow(RangeError);
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    await client.close();
+  });
+});
+
+describe("Real-world usage patterns", () => {
+  beforeEach(() => {
+    mockFetch.mockClear();
+  });
+
+  it("should support document embedding workflow", async () => {
+    // User scenario: "I want to embed a batch of documents and store them"
+    const client = new SIEClient("http://localhost:8080");
+
+    // Simulate embedding 3 documents
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [
+          { id: "doc-1", dense: { values: new Float32Array([0.1, 0.2, 0.3]) } },
+          { id: "doc-2", dense: { values: new Float32Array([0.4, 0.5, 0.6]) } },
+          { id: "doc-3", dense: { values: new Float32Array([0.7, 0.8, 0.9]) } },
+        ],
+      }),
+    );
+
+    const documents = [
+      { id: "doc-1", text: "First document about AI" },
+      { id: "doc-2", text: "Second document about ML" },
+      { id: "doc-3", text: "Third document about NLP" },
+    ];
+
+    const embeddings = await client.encode("bge-m3", documents);
+
+    // User can build an index from results
+    const index = new Map<string, Float32Array>();
+    for (const result of embeddings) {
+      if (result.id && result.dense) {
+        index.set(result.id, result.dense);
+      }
+    }
+
+    expect(index.size).toBe(3);
+    expect(index.get("doc-1")?.[0]).toBeCloseTo(0.1);
+
+    await client.close();
+  });
+
+  it("should support query embedding with instruction", async () => {
+    // User scenario: "I want to embed a search query with instruction"
+    const client = new SIEClient("http://localhost:8080");
+
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1, 0.2, 0.3]) } }],
+      }),
+    );
+
+    const queryEmbedding = await client.encode(
+      "gte-qwen2-7b",
+      { text: "What is machine learning?" },
+      {
+        instruction: "Retrieve passages that answer this question",
+        isQuery: true,
+      },
+    );
+
+    expect(queryEmbedding.dense).toBeInstanceOf(Float32Array);
+
+    await client.close();
+  });
+
+  it("should support multimodal embedding", async () => {
+    // User scenario: "I want to embed images for visual search"
+    const client = new SIEClient("http://localhost:8080");
+
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [
+          {
+            multivector: {
+              values: [new Float32Array([0.1, 0.2])],
+            },
+          },
+        ],
+      }),
+    );
+
+    const imageBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]); // JPEG magic bytes
+    const result = await client.encode(
+      "colpali-v1.3",
+      { images: [imageBytes] },
+      { outputTypes: ["multivector"] },
+    );
+
+    expect(result.multivector).toBeDefined();
+
+    await client.close();
+  });
+
+  it("should convert images to wire format before encode serialization", async () => {
+    const client = new SIEClient("http://localhost:8080");
+    const imageBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
+
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ dense: { values: new Float32Array([0.1, 0.2]) } }],
+      }),
+    );
+
+    await client.encode("colpali-v1.3", { id: "page-1", images: [imageBytes] });
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{
+      items?: { images?: { data: Uint8Array; format: string }[] }[];
+    }>(body);
+
+    expect(parsed.items?.[0]?.images?.[0]?.data).toEqual(imageBytes);
+    expect(parsed.items?.[0]?.images?.[0]?.format).toBe("jpeg");
+
+    await client.close();
+  });
+});
+
+describe("SIEClient.score() - reranking", () => {
+  let client: SIEClient;
+
+  beforeEach(() => {
+    mockFetch.mockClear();
+    client = new SIEClient("http://localhost:8080");
+  });
+
+  afterEach(async () => {
+    await client.close();
+  });
+
+  it("should score items against a query", async () => {
+    // User scenario: "I want to rerank search results"
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        model: "bge-reranker-v2",
+        scores: [
+          { item_id: "doc-2", score: 0.95, rank: 0 },
+          { item_id: "doc-1", score: 0.72, rank: 1 },
+          { item_id: "doc-3", score: 0.45, rank: 2 },
+        ],
+        usage: { input_tokens: 91, images: 2 },
+      }),
+    );
+
+    const result = await client.score("bge-reranker-v2", { text: "What is machine learning?" }, [
+      { id: "doc-1", text: "Python is a programming language" },
+      { id: "doc-2", text: "Machine learning is a subset of AI" },
+      { id: "doc-3", text: "The weather is nice today" },
+    ]);
+
+    expect(result.scores).toHaveLength(3);
+    expect(result.scores[0]?.itemId).toBe("doc-2"); // Most relevant
+    expect(result.scores[0]?.rank).toBe(0);
+    expect(result.scores[0]?.score).toBeCloseTo(0.95);
+    expect(result.usage).toEqual({ inputTokens: 91, images: 2 });
+  });
+
+  it("should use correct URL with model in path", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        model: "bge-reranker-v2",
+        scores: [],
+      }),
+    );
+
+    await client.score("bge-reranker-v2", { text: "query" }, [{ text: "doc" }]);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:8080/v1/score/bge-reranker-v2",
+      expect.anything(),
+    );
+  });
+
+  it("should echo query ID if provided", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        model: "bge-reranker-v2",
+        query_id: "search-42",
+        scores: [{ item_id: "doc-1", score: 0.9, rank: 0 }],
+      }),
+    );
+
+    const result = await client.score("bge-reranker-v2", { id: "search-42", text: "query" }, [
+      { text: "doc" },
+    ]);
+
+    expect(result.queryId).toBe("search-42");
+  });
+
+  it("should allow per-request GPU override", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        model: "bge-reranker-v2",
+        scores: [],
+      }),
+    );
+
+    await client.score("bge-reranker-v2", { text: "query" }, [{ text: "doc" }], {
+      gpu: "a100-80gb",
+    });
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const headers = fetchCall?.[1]?.headers as Record<string, string>;
+    expect(headers["X-SIE-MACHINE-PROFILE"]).toBe("a100-80gb");
+  });
+
+  it("should convert image query and items to wire format before score serialization", async () => {
+    const queryImage = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1]);
+    const itemImage = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 2]);
+
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        model: "qwen3-vl-reranker",
+        scores: [{ item_id: "page-1", score: 0.9, rank: 0 }],
+      }),
+    );
+
+    await client.score("qwen3-vl-reranker", { text: "rocket nozzle", images: [queryImage] }, [
+      { id: "page-1", images: [itemImage] },
+    ]);
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{
+      query?: { images?: { data: Uint8Array; format: string }[] };
+      items?: { images?: { data: Uint8Array; format: string }[] }[];
+    }>(body);
+
+    expect(parsed.query?.images?.[0]?.data).toEqual(queryImage);
+    expect(parsed.query?.images?.[0]?.format).toBe("jpeg");
+    expect(parsed.items?.[0]?.images?.[0]?.data).toEqual(itemImage);
+    expect(parsed.items?.[0]?.images?.[0]?.format).toBe("jpeg");
+  });
+});
+
+describe("SIEClient.extract() - NER", () => {
+  let client: SIEClient;
+
+  beforeEach(() => {
+    mockFetch.mockClear();
+    client = new SIEClient("http://localhost:8080");
+  });
+
+  afterEach(async () => {
+    await client.close();
+  });
+
+  it("should extract entities from single item", async () => {
+    // User scenario: "I want to extract named entities"
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [
+          {
+            entities: [
+              { text: "Apple", label: "organization", score: 0.95, start: 0, end: 5 },
+              { text: "Steve Jobs", label: "person", score: 0.92, start: 22, end: 32 },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const result = await client.extract(
+      "gliner-multi-v2.1",
+      { text: "Apple was founded by Steve Jobs." },
+      { labels: ["person", "organization"] },
+    );
+
+    expect(result.entities).toHaveLength(2);
+    expect(result.entities[0]?.text).toBe("Apple");
+    expect(result.entities[0]?.label).toBe("organization");
+    expect(result.entities[1]?.text).toBe("Steve Jobs");
+    expect(result.entities[1]?.label).toBe("person");
+  });
+
+  it("should extract entities from batch items", async () => {
+    // User scenario: "I want to process many documents"
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [
+          {
+            id: "doc-1",
+            entities: [{ text: "Elon Musk", label: "person", score: 0.9, start: 0, end: 9 }],
+          },
+          {
+            id: "doc-2",
+            entities: [{ text: "Google", label: "organization", score: 0.88, start: 0, end: 6 }],
+          },
+        ],
+      }),
+    );
+
+    const results = await client.extract(
+      "gliner-multi-v2.1",
+      [
+        { id: "doc-1", text: "Elon Musk announced..." },
+        { id: "doc-2", text: "Google released a new product" },
+      ],
+      { labels: ["person", "organization"] },
+    );
+
+    expect(results).toHaveLength(2);
+    expect(results[0]?.id).toBe("doc-1");
+    expect(results[0]?.entities[0]?.text).toBe("Elon Musk");
+    expect(results[1]?.id).toBe("doc-2");
+    expect(results[1]?.entities[0]?.text).toBe("Google");
+  });
+
+  it("should use correct URL with model in path", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ entities: [] }],
+      }),
+    );
+
+    await client.extract("gliner-multi-v2.1", { text: "test" }, { labels: ["person"] });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:8080/v1/extract/gliner-multi-v2.1",
+      expect.anything(),
+    );
+  });
+
+  it("should pass labels in params", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ entities: [] }],
+      }),
+    );
+
+    await client.extract(
+      "gliner-multi-v2.1",
+      { text: "test" },
+      { labels: ["person", "organization", "location"] },
+    );
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{ params?: { labels?: string[] } }>(body);
+
+    expect(parsed.params?.labels).toEqual(["person", "organization", "location"]);
+  });
+
+  it("should convert images to wire format before extract serialization", async () => {
+    const imageBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
+
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ entities: [] }],
+      }),
+    );
+
+    await client.extract("docling", { id: "page-1", images: [imageBytes] }, { labels: [] });
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{
+      items?: { images?: { data: Uint8Array; format: string }[] }[];
+    }>(body);
+
+    expect(parsed.items?.[0]?.images?.[0]?.data).toEqual(imageBytes);
+    expect(parsed.items?.[0]?.images?.[0]?.format).toBe("jpeg");
+  });
+
+  it("should serialize audio metadata and preserve image and document payloads", async () => {
+    const audioBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46]);
+    const imageBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
+    const documentBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ entities: [] }],
+      }),
+    );
+
+    await client.extract(
+      "whisper",
+      {
+        audio: { data: audioBytes, format: "wav", sampleRate: 16_000 },
+        images: [imageBytes],
+        document: { data: documentBytes, format: "pdf" },
+      },
+      { labels: [] },
+    );
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{
+      items?: {
+        audio?: { data: Uint8Array; format?: string; sample_rate?: number; sampleRate?: number };
+        images?: { data: Uint8Array; format: string }[];
+        document?: { data: Uint8Array; format?: string };
+      }[];
+    }>(body);
+    const item = parsed.items?.[0];
+
+    expect(item?.audio?.data).toEqual(audioBytes);
+    expect(item?.audio?.format).toBe("wav");
+    expect(item?.audio?.sample_rate).toBe(16_000);
+    expect(item?.audio?.sampleRate).toBeUndefined();
+    expect(item?.images).toEqual([{ data: imageBytes, format: "jpeg" }]);
+    expect(item?.document).toEqual({ data: documentBytes, format: "pdf" });
+  });
+
+  it("should normalize direct audio bytes to the wire format", async () => {
+    const audioBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46]);
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ entities: [] }],
+      }),
+    );
+
+    await client.extract("whisper", { audio: audioBytes }, { labels: [] });
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{
+      items?: { audio?: { data: Uint8Array; format?: string; sample_rate?: number } }[];
+    }>(body);
+    expect(parsed.items?.[0]?.audio).toEqual({ data: audioBytes });
+  });
+
+  it("should pass threshold option in params", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ entities: [] }],
+      }),
+    );
+
+    await client.extract(
+      "gliner-multi-v2.1",
+      { text: "test" },
+      { labels: ["person"], threshold: 0.8 },
+    );
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{ params?: { threshold?: number } }>(body);
+
+    expect(parsed.params?.threshold).toBe(0.8);
+  });
+
+  it("should forward adapterOptions as params.options on the wire", async () => {
+    // User scenario: "I want to pass overflow_policy to a gliclass model"
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ entities: [] }],
+      }),
+    );
+
+    await client.extract(
+      "knowledgator/gliclass-small-v1.0",
+      { text: "test" },
+      {
+        labels: ["positive", "negative"],
+        adapterOptions: { overflow_policy: "error" },
+      },
+    );
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{
+      params?: { options?: Record<string, unknown> };
+    }>(body);
+
+    expect(parsed.params?.options).toEqual({ overflow_policy: "error" });
+  });
+
+  it("should omit params.options when adapterOptions is not provided", async () => {
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [{ entities: [] }],
+      }),
+    );
+
+    await client.extract("gliner-multi-v2.1", { text: "test" }, { labels: ["person"] });
+
+    const fetchCall = mockFetch.mock.calls[0];
+    const body = fetchCall?.[1]?.body as Uint8Array;
+    const parsed = unpackMessage<{ params?: Record<string, unknown> }>(body);
+
+    expect(parsed.params).not.toHaveProperty("options");
+  });
+
+  it("should return entity positions for highlighting", async () => {
+    // User scenario: "I want to highlight entities in my UI"
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        items: [
+          {
+            entities: [
+              { text: "John Smith", label: "person", score: 0.95, start: 0, end: 10 },
+              { text: "Acme Corp", label: "organization", score: 0.88, start: 20, end: 29 },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const result = await client.extract(
+      "gliner-multi-v2.1",
+      { text: "John Smith works at Acme Corp as a developer." },
+      { labels: ["person", "organization"] },
+    );
+
+    // User can use positions to highlight text
+    const text = "John Smith works at Acme Corp as a developer.";
+    for (const entity of result.entities) {
+      if (entity.start !== undefined && entity.end !== undefined) {
+        const extracted = text.slice(entity.start, entity.end);
+        expect(extracted).toBe(entity.text);
+      }
+    }
+  });
+});
+
+describe("Real-world reranking workflow", () => {
+  beforeEach(() => {
+    mockFetch.mockClear();
+  });
+
+  it("should support typical RAG reranking flow", async () => {
+    // User scenario: "First retrieve candidates, then rerank"
+    const client = new SIEClient("http://localhost:8080");
+
+    // First: Get initial candidates from vector search (simulated)
+    const candidates = [
+      { id: "chunk-1", text: "Machine learning models require training data." },
+      { id: "chunk-2", text: "Python is popular for data science." },
+      { id: "chunk-3", text: "Deep learning is a subset of machine learning." },
+      { id: "chunk-4", text: "The sky is blue on sunny days." },
+    ];
+
+    // Second: Rerank candidates
+    mockFetch.mockResolvedValueOnce(
+      createMsgpackResponse({
+        model: "bge-reranker-v2",
+        scores: [
+          { item_id: "chunk-3", score: 0.95, rank: 0 },
+          { item_id: "chunk-1", score: 0.88, rank: 1 },
+          { item_id: "chunk-2", score: 0.45, rank: 2 },
+          { item_id: "chunk-4", score: 0.12, rank: 3 },
+        ],
+      }),
+    );
+
+    const result = await client.score(
+      "bge-reranker-v2",
+      { text: "What is machine learning?" },
+      candidates,
+    );
+
+    // Get top 2 for context
+    const topChunks = result.scores.slice(0, 2).map((s) => s.itemId);
+    expect(topChunks).toEqual(["chunk-3", "chunk-1"]);
+
+    await client.close();
+  });
+});

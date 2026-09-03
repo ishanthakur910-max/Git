@@ -1,0 +1,38 @@
+# SIE deployment. Native SIEAsyncClient.generate is served by SIE's generation
+# bundle (GPU), so use a CUDA image locally:
+#   docker run --gpus all -p 8080:8080 ghcr.io/superlinked/sie-server:latest-cuda12-default
+# or override with SIE_CLUSTER_URL / SIE_API_KEY to target a managed GPU cluster.
+cluster:
+  url: "http://localhost:8080"
+  api_key: ""
+  gpu: ""                  # only set for managed multi-GPU clusters (e.g. "l4-spot"); ignored locally
+  provision_timeout_s: 900 # cold clusters scale from zero; first call to each model pays a load
+
+# The heart of the demo: one cluster, many models, the right one for each job.
+# Every value is a real model in the SIE catalog (https://superlinked.com/models).
+# Swap any line to try a different model; no other code changes.
+models:
+  # Generative LLMs, the agent "brains". Two Qwen models, both non-thinking:
+  # Qwen3.6-27B is the brain: plans, reasons across tool evidence, and
+  # synthesizes; Qwen3.5-4B handles latency-sensitive bounded tasks.
+  triage: "Qwen/Qwen3.5-4B"                          # fast doc-type classifier
+  orchestrator: "Qwen/Qwen3.6-27B"                   # the brain: native generate + tools + JSON schema
+  vision: "Qwen/Qwen3.5-4B"                          # reads scanned / signature pages (text + image); the vision LLM
+  reasoning: "Qwen/Qwen3.6-27B"                      # grounded clause analysis with bounded structured output
+  sql: "Qwen/Qwen3.5-4B"                             # text-to-SQL via native generate; raw specialists use sql.mode=prompt
+  guard: "ibm-granite/granite-guardian-3.0-2b"       # safety / prompt-injection guardrail (specialist; alias: guard)
+  # Retrieval + extraction tools (encode / score / extract):
+  ocr: "lightonai/LightOnOCR-2-1B"                   # scanned PDF / image -> markdown (latest OCR model)
+  embed: "BAAI/bge-m3"                               # dense embeddings for clause search
+  rerank: "Qwen/Qwen3-Reranker-4B"                   # cross-encoder rerank of retrieved clauses
+  entities: "fastino/gliner2-large-v1"               # zero-shot entity extraction (parties, dates, amounts)
+
+# Tunables for the SIE-backed tools.
+search:
+  top_k_candidates: 12   # clauses retrieved by embedding similarity
+  top_k_results: 4       # clauses kept after rerank
+
+# Text-to-SQL prompt shape. Both modes use native SIE generate: instruct builds
+# one role-labelled raw prompt, while prompt sends a specialist's raw template.
+sql:
+  mode: "instruct"   # "instruct" | "prompt"

@@ -1,0 +1,192 @@
+[
+  {
+    "stage": "warmup",
+    "function": "generate",
+    "requested_model": "Qwen/Qwen3.6-27B",
+    "runtime_model": "Qwen/Qwen3.6-27B",
+    "request_id": "019feb49-cf88-7781-94d1-46803700a6ec",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 1,
+    "execution_identity_sha256": "5655a12ec099f1921d5fa1822f1fda949553c4f839d3fd9e0417147982e54106"
+  },
+  {
+    "stage": "safety_guardrail",
+    "function": "generate",
+    "requested_model": "ibm-granite/granite-guardian-3.0-2b",
+    "runtime_model": "ibm-granite/granite-guardian-3.0-2b",
+    "request_id": "019feb49-d128-7c00-a2a9-6ad91396c862",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 2,
+    "execution_identity_sha256": "7a49627d19b3b0349ee752c148c3e87fb034b0f88300f68f8eb553c3ae47ca96"
+  },
+  {
+    "stage": "classify_document",
+    "function": "generate",
+    "requested_model": "Qwen/Qwen3.5-4B",
+    "runtime_model": "Qwen/Qwen3.5-4B",
+    "request_id": "019feb49-d2b5-7dc0-a3d8-ab92e3b6d4d3",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 20,
+    "execution_identity_sha256": "40ab9e95a3707617eb64edd8f78d2bab09c5522516c0b6a19d0063392d71bd97"
+  },
+  {
+    "stage": "ocr_signature_page",
+    "function": "extract",
+    "requested_model": "lightonai/LightOnOCR-2-1B",
+    "runtime_model": null,
+    "request_id": "019feb49-d6b9-7b32-9517-839264f5e5bb",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 200,
+    "execution_identity_sha256": "7e05790915cbdb9673e2419ff7ebe37057be993b0b9a3f18d97319ebeaf47fb2"
+  },
+  {
+    "stage": "extract_entities",
+    "function": "extract",
+    "requested_model": "fastino/gliner2-large-v1",
+    "runtime_model": null,
+    "request_id": "019feb49-da0b-7ad2-9f2b-a4171ac1a0c3",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 10,
+    "execution_identity_sha256": "d365dc27037c3c16cfc7e6ee3ef02f1a9cfaca84c1967d22ab4c2bf4b31e6e4d"
+  },
+  {
+    "stage": "read_signature_page",
+    "function": "generate",
+    "requested_model": "Qwen/Qwen3.5-4B",
+    "runtime_model": "Qwen/Qwen3.5-4B",
+    "request_id": "019feb49-dc2d-7451-b773-fffd05254752",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 37,
+    "execution_identity_sha256": "40ab9e95a3707617eb64edd8f78d2bab09c5522516c0b6a19d0063392d71bd97"
+  },
+  {
+    "stage": "search_clauses:index",
+    "function": "encode",
+    "requested_model": "BAAI/bge-m3",
+    "runtime_model": null,
+    "request_id": "019feb49-e756-77a3-9d2f-b523d8ba3712",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 33,
+    "execution_identity_sha256": "391eac08033efcd20970b6f49a3e2254c39c4218bfb4292c058b891df582ad06"
+  },
+  {
+    "stage": "search_clauses:encode",
+    "function": "encode",
+    "requested_model": "BAAI/bge-m3",
+    "runtime_model": null,
+    "request_id": "019feb49-ea5b-75c0-9145-dbc224f65004",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 1,
+    "execution_identity_sha256": "391eac08033efcd20970b6f49a3e2254c39c4218bfb4292c058b891df582ad06"
+  },
+  {
+    "stage": "search_clauses:score",
+    "function": "score",
+    "requested_model": "Qwen/Qwen3-Reranker-4B",
+    "runtime_model": "Qwen/Qwen3-Reranker-4B",
+    "request_id": "019feb49-eb2e-7600-82b2-9ccb89dd8580",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 75,
+    "execution_identity_sha256": "d365dc27037c3c16cfc7e6ee3ef02f1a9cfaca84c1967d22ab4c2bf4b31e6e4d"
+  },
+  {
+    "stage": "search_clauses:encode",
+    "function": "encode",
+    "requested_model": "BAAI/bge-m3",
+    "runtime_model": null,
+    "request_id": "019feb49-ede4-76a0-8f25-cafbd7ea6707",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 1,
+    "execution_identity_sha256": "391eac08033efcd20970b6f49a3e2254c39c4218bfb4292c058b891df582ad06"
+  },
+  {
+    "stage": "search_clauses:score",
+    "function": "score",
+    "requested_model": "Qwen/Qwen3-Reranker-4B",
+    "runtime_model": "Qwen/Qwen3-Reranker-4B",
+    "request_id": "019feb49-eec1-7a20-8746-4e8c356fb944",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 75,
+    "execution_identity_sha256": "d365dc27037c3c16cfc7e6ee3ef02f1a9cfaca84c1967d22ab4c2bf4b31e6e4d"
+  },
+  {
+    "stage": "search_clauses:encode",
+    "function": "encode",
+    "requested_model": "BAAI/bge-m3",
+    "runtime_model": null,
+    "request_id": "019feb49-f174-72f1-ae61-6ca2d3ce4c01",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 1,
+    "execution_identity_sha256": "391eac08033efcd20970b6f49a3e2254c39c4218bfb4292c058b891df582ad06"
+  },
+  {
+    "stage": "search_clauses:score",
+    "function": "score",
+    "requested_model": "Qwen/Qwen3-Reranker-4B",
+    "runtime_model": "Qwen/Qwen3-Reranker-4B",
+    "request_id": "019feb49-f24c-7a10-afba-da57c3a77d51",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 75,
+    "execution_identity_sha256": "d365dc27037c3c16cfc7e6ee3ef02f1a9cfaca84c1967d22ab4c2bf4b31e6e4d"
+  },
+  {
+    "stage": "search_clauses:encode",
+    "function": "encode",
+    "requested_model": "BAAI/bge-m3",
+    "runtime_model": null,
+    "request_id": "019feb49-f4f0-7d43-bae1-162d39261f0c",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 1,
+    "execution_identity_sha256": "391eac08033efcd20970b6f49a3e2254c39c4218bfb4292c058b891df582ad06"
+  },
+  {
+    "stage": "search_clauses:score",
+    "function": "score",
+    "requested_model": "Qwen/Qwen3-Reranker-4B",
+    "runtime_model": "Qwen/Qwen3-Reranker-4B",
+    "request_id": "019feb49-f5c2-7ce2-94d7-2c5e39d65a3f",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 75,
+    "execution_identity_sha256": "d365dc27037c3c16cfc7e6ee3ef02f1a9cfaca84c1967d22ab4c2bf4b31e6e4d"
+  },
+  {
+    "stage": "analyze_clause_risks",
+    "function": "generate",
+    "requested_model": "Qwen/Qwen3.6-27B",
+    "runtime_model": "Qwen/Qwen3.6-27B",
+    "request_id": "019feb49-f878-7681-a5d5-a0be8a4cd424",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 234,
+    "execution_identity_sha256": "5f4a7840183ae006b5381892169c8bfdeea694284ed57d2b80cc1cca518c4347"
+  },
+  {
+    "stage": "query_obligations_db",
+    "function": "generate",
+    "requested_model": "Qwen/Qwen3.5-4B",
+    "runtime_model": "Qwen/Qwen3.5-4B",
+    "request_id": "019feb4a-5390-7b21-b2f3-af189077175a",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 50,
+    "execution_identity_sha256": "40ab9e95a3707617eb64edd8f78d2bab09c5522516c0b6a19d0063392d71bd97"
+  },
+  {
+    "stage": "investigator_report",
+    "function": "generate",
+    "requested_model": "Qwen/Qwen3.6-27B",
+    "runtime_model": "Qwen/Qwen3.6-27B",
+    "request_id": "019feb4a-6280-78c2-a322-de3074d7428b",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 459,
+    "execution_identity_sha256": "5f4a7840183ae006b5381892169c8bfdeea694284ed57d2b80cc1cca518c4347"
+  },
+  {
+    "stage": "synthesize_review",
+    "function": "generate",
+    "requested_model": "Qwen/Qwen3.6-27B",
+    "runtime_model": "Qwen/Qwen3.6-27B",
+    "request_id": "019feb4a-f9b8-70d3-93fc-dafdcf5ccbf4",
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "credits_debited": 288,
+    "execution_identity_sha256": "5f4a7840183ae006b5381892169c8bfdeea694284ed57d2b80cc1cca518c4347"
+  }
+]

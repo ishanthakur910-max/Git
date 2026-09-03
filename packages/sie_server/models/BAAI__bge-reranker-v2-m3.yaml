@@ -1,0 +1,25 @@
+sie_id: BAAI/bge-reranker-v2-m3
+hf_id: BAAI/bge-reranker-v2-m3
+hf_revision: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode: null
+  score: {}
+  extract: null
+max_sequence_length: 8192
+profiles:
+  default:
+    max_batch_tokens: 16384
+    # fp16 is explicit (not null) so the Mac torch-MPS fallback runs fp16
+    # (≈1.24 GB vs 3.21 GB fp32, Pearson 0.9997 vs CPU-fp32 — benchmarked). On
+    # CUDA this is unchanged: the engine default is already fp16, so null
+    # resolved to fp16 there anyway. On CPU the cross-encoder ignores it (fp32).
+    compute_precision: float16
+    adapter_path: sie_server.adapters.bert_flash_cross_encoder:BertFlashCrossEncoderAdapter
+    adapter_options:
+      loadtime: {}
+      runtime: {}

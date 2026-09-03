@@ -1,0 +1,20 @@
+sie_id: urchade/gliner_small-v2.1
+hf_id: urchade/gliner_small-v2.1
+hf_revision: 4e091416cf7c3481db542c2a3d26156916f3a47f
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode: null
+  score: null
+  extract: {}
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.gliner:GLiNERAdapter
+    adapter_options:
+      loadtime: {}
+      runtime: {}

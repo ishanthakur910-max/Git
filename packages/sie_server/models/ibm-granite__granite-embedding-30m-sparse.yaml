@@ -1,0 +1,25 @@
+sie_id: ibm-granite/granite-embedding-30m-sparse
+hf_id: ibm-granite/granite-embedding-30m-sparse
+hf_revision: ad82b1fd09541c998c8d45045d601c51fdb8a9b7
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode:
+    dense: null
+    sparse:
+      dim: 50265
+    multivector: null
+  score: null
+  extract: null
+max_sequence_length: 512
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.splade_flash.adapter:SPLADEFlashAdapter
+    adapter_options:
+      loadtime: {}
+      runtime: {}

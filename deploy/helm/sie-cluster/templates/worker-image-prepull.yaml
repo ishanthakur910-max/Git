@@ -1,0 +1,135 @@
+{{- $root := . -}}
+{{- if $root.Values.workers.common.imagePrepull.enabled }}
+{{- range $poolName, $pool := .Values.workers.pools }}
+{{- if $pool.enabled }}
+{{- $platform := default $root.Values.workers.common.platform $pool.platform }}
+{{- $rs := $root.Values.workers.common.workerSidecar }}
+{{- $rsTag := default $root.Chart.AppVersion $rs.image.tag }}
+{{- $rsImage := printf "%s:%s" $rs.image.repository $rsTag }}
+{{- range $bundleName, $bundleCfg := $pool.bundles }}
+{{- if dig "enabled" true $bundleCfg }}
+{{- $lane := include "sie-cluster.worker.lane" (dict "root" $root "poolName" $poolName "pool" $pool "bundleName" $bundleName) | fromJson }}
+{{- $machineProfile := $lane.machineProfile }}
+{{- $bundle := $lane.bundle }}
+{{- /* See worker-statefulset.yaml for the imageBundle rationale. */ -}}
+{{- $imageBundle := default $bundle $bundleCfg.imageBundle }}
+{{- /* Mirror the worker-statefulset bundle->platform guard so prepull never
+       references an image the release pipeline does not build. */ -}}
+{{- $bundlePlatforms := $root.Values.workers.common.bundlePlatforms | default dict }}
+{{- $requiredPlatform := index $bundlePlatforms $imageBundle | default "" }}
+{{- if and $requiredPlatform (ne $requiredPlatform $platform) }}
+{{- fail (printf "workers.pools.%s.bundles.%s: image bundle %q is built only for platform %q, but this pool resolves to %q. Set this pool's `platform: %s`." $poolName $bundleName $imageBundle $requiredPlatform $platform $requiredPlatform) }}
+{{- end }}
+{{- $imageTag := default $root.Chart.AppVersion $root.Values.workers.common.image.tag }}
+{{- $workerImage := printf "%s:%s-%s-%s" $root.Values.workers.common.image.repository $imageTag $platform $imageBundle }}
+{{- $engine := default (default $root.Values.workers.common.engine $pool.engine) $bundleCfg.engine }}
+{{- if not (or (eq $engine "pytorch") (eq $engine "candle")) }}
+{{- fail (printf "workers.pools.%s.bundles.%s.engine must be one of: pytorch, candle" $poolName $bundleName) }}
+{{- end }}
+{{- $rust := $root.Values.workers.common.rust }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "sie-cluster.fullname" $root }}-image-prepull-{{ $poolName }}-{{ $bundleName }}
+  namespace: {{ include "sie-cluster.namespace" $root }}
+  labels:
+    {{- include "sie-cluster.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: image-prepull
+    # Preserve the immutable selector published in v0.6.20. The physical
+    # queue is exposed separately for inventory and diagnostics.
+    sie.superlinked.com/pool: {{ $poolName | quote }}
+    sie.superlinked.com/queue-pool: {{ $lane.queuePool | quote }}
+    sie.superlinked.com/machine-profile: {{ $machineProfile | quote }}
+    sie.superlinked.com/bundle: {{ $bundle | quote }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "sie-cluster.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: image-prepull
+      sie.superlinked.com/pool: {{ $poolName | quote }}
+      sie.superlinked.com/bundle: {{ $bundle | quote }}
+  template:
+    metadata:
+      labels:
+        {{- include "sie-cluster.selectorLabels" $root | nindent 8 }}
+        app.kubernetes.io/component: image-prepull
+        sie.superlinked.com/pool: {{ $poolName | quote }}
+        sie.superlinked.com/queue-pool: {{ $lane.queuePool | quote }}
+        sie.superlinked.com/machine-profile: {{ $machineProfile | quote }}
+        sie.superlinked.com/bundle: {{ $bundle | quote }}
+    spec:
+      {{- include "sie-cluster.imagePullSecrets" $root | nindent 6 }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 0
+      initContainers:
+        - name: pull-worker-image
+          {{- if eq $engine "candle" }}
+          {{- $rustTag := include "sie-cluster.rustWorker.imageTag" (dict "root" $root "poolName" $poolName "pool" $pool "machineProfile" $machineProfile) }}
+          {{- $rustImage := printf "%s:%s" $rust.image.repository $rustTag }}
+          image: {{ $rustImage }}
+          imagePullPolicy: {{ $rust.image.pullPolicy }}
+          command: ["/sie-server-rust", "--version"]
+          {{- else }}
+          image: {{ $workerImage }}
+          imagePullPolicy: {{ $root.Values.workers.common.image.pullPolicy }}
+          command: ["true"]
+          {{- end }}
+          resources:
+            requests:
+              cpu: "1m"
+              memory: "8Mi"
+            limits:
+              cpu: "10m"
+              memory: "16Mi"
+        {{- if $rs.enabled }}
+        - name: pull-sie-worker-sidecar-image
+          image: {{ $rsImage }}
+          imagePullPolicy: {{ $rs.image.pullPolicy }}
+          command: ["/sie-server-sidecar", "--version"]
+          resources:
+            requests:
+              cpu: "1m"
+              memory: "8Mi"
+            limits:
+              cpu: "10m"
+              memory: "16Mi"
+        {{- end }}
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.10
+          resources:
+            requests:
+              cpu: "1m"
+              memory: "8Mi"
+            limits:
+              cpu: "10m"
+              memory: "16Mi"
+      {{- /*
+        Pin the prepull DS to the same physical nodes as the workers it pre-warms.
+        Without a nodeSelector the DS lands on every node (including small system nodes)
+        and the large worker image exhausts ephemeral storage, triggering DiskPressure
+        and evictions of co-located pods. The sie.superlinked.com/gpu-type label is
+        set by both the AWS and GCP terraform modules on GPU node groups.
+      */ -}}
+      {{- $prepullNodeSelector := dict }}
+      {{- if $pool.gpuType }}
+      {{- $_ := set $prepullNodeSelector "sie.superlinked.com/gpu-type" $pool.gpuType }}
+      {{- end }}
+      {{- range $k, $v := $pool.nodeSelector }}
+      {{- $_ := set $prepullNodeSelector $k $v }}
+      {{- end }}
+      {{- with $prepullNodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $pool.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      priorityClassName: ""
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

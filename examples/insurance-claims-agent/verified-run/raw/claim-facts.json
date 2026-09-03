@@ -1,0 +1,52 @@
+{
+  "entities": [
+    {
+      "text": "$182,552.00",
+      "label": "amended proof of loss total",
+      "score": 1.0,
+      "start": 71,
+      "end": 82,
+      "bbox": null
+    },
+    {
+      "text": "12 to 15 cubic yards",
+      "label": "debris volume",
+      "score": 1.0,
+      "start": 506,
+      "end": 526,
+      "bbox": null
+    },
+    {
+      "text": "$49,500.00",
+      "label": "debris removal estimate",
+      "score": 0.99951171875,
+      "start": 732,
+      "end": 742,
+      "bbox": null
+    },
+    {
+      "text": "$181,832.94",
+      "label": "barge transportation estimate",
+      "score": 1.0,
+      "start": 819,
+      "end": 830,
+      "bbox": null
+    }
+  ],
+  "relations": [],
+  "classifications": [],
+  "objects": [],
+  "id": "appeal-facts",
+  "model": "fastino/gliner2-large-v1",
+  "request": {
+    "id": "019feac8-349f-7aa0-851f-5e68c355c49c",
+    "credits_debited": 4,
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "usage": {
+      "input_tokens": 163,
+      "credits_charged": 4,
+      "rate_book_version": "2026-08-09-production-bootstrap-v3"
+    },
+    "execution_identity_sha256": "d365dc27037c3c16cfc7e6ee3ef02f1a9cfaca84c1967d22ab4c2bf4b31e6e4d"
+  }
+}

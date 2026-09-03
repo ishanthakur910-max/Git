@@ -1,0 +1,68 @@
+{
+  "entities": [
+    {
+      "text": "7:37 p.m.",
+      "label": "event time",
+      "score": 0.79638671875,
+      "start": 3,
+      "end": 12,
+      "bbox": null
+    },
+    {
+      "text": "Sebring HBD",
+      "label": "location",
+      "score": 0.9130859375,
+      "start": 22,
+      "end": 33,
+      "bbox": null
+    },
+    {
+      "text": "L1 bearing",
+      "label": "bearing",
+      "score": 0.98583984375,
+      "start": 55,
+      "end": 65,
+      "bbox": null
+    },
+    {
+      "text": "alert",
+      "label": "alert",
+      "score": 0.58984375,
+      "start": 125,
+      "end": 130,
+      "bbox": null
+    },
+    {
+      "text": "R1 bearing",
+      "label": "bearing",
+      "score": 0.98193359375,
+      "start": 136,
+      "end": 146,
+      "bbox": null
+    },
+    {
+      "text": "L1 bearing",
+      "label": "bearing",
+      "score": 0.97900390625,
+      "start": 184,
+      "end": 194,
+      "bbox": null
+    }
+  ],
+  "relations": [],
+  "classifications": [],
+  "objects": [],
+  "id": "ntsb-detector-0",
+  "model": "urchade/gliner_multi-v2.1",
+  "request": {
+    "id": "019feaa5-d3fc-7891-8f96-297130dcdc9e",
+    "credits_debited": 1,
+    "rate_book_version": "2026-08-09-production-bootstrap-v3",
+    "usage": {
+      "input_tokens": 74,
+      "credits_charged": 1,
+      "rate_book_version": "2026-08-09-production-bootstrap-v3"
+    },
+    "execution_identity_sha256": "d365dc27037c3c16cfc7e6ee3ef02f1a9cfaca84c1967d22ab4c2bf4b31e6e4d"
+  }
+}

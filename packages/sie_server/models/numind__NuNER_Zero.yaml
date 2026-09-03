@@ -1,0 +1,24 @@
+sie_id: numind/NuNER_Zero
+hf_id: numind/NuNER_Zero
+hf_revision: c90187673f464518dca09f41689184ed6976242c
+hf_tokenizer_dependencies:
+  microsoft/deberta-v3-large: 64a8c8eab3e352a784c658aef62be1662607476f
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode: null
+  score: null
+  extract: {}
+max_sequence_length: 384
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: null
+    adapter_path: sie_server.adapters.gliner:GLiNERAdapter
+    adapter_options:
+      loadtime: {}
+      runtime:
+        merge_adjacent_entities: true

@@ -1,0 +1,36 @@
+sie_id: intfloat/e5-mistral-7b-instruct
+hf_id: intfloat/e5-mistral-7b-instruct
+hf_revision: d62cc4417be0e3289c03dd459d1ef2d137e2554e
+inputs:
+  text: true
+  image: false
+  audio: false
+  video: false
+tasks:
+  encode:
+    dense:
+      dim: 4096
+    sparse: null
+    multivector: null
+  score: null
+  extract: null
+max_sequence_length: 4096
+profiles:
+  default:
+    max_batch_tokens: 16384
+    compute_precision: bfloat16
+    adapter_path: sie_server.adapters.sglang.embedding:SGLangEmbeddingAdapter
+    adapter_options:
+      loadtime:
+        mem_fraction_static: 0.85
+        # Mistral-family last-token embedder: SGLang does not auto-append EOS for
+        # this architecture, so last-token pooling reads the wrong position and
+        # retrieval collapses (#1489). Append the model's own EOS at encode time.
+        append_eos: true
+      runtime:
+        pooling: last_token
+        normalize: true
+        query_template: |-
+          Instruct: {instruction}
+          Query: {text}
+        default_instruction: Given a web search query, retrieve relevant passages that answer the query
